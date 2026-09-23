@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import datetime as dt
 from dataclasses import dataclass
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, List, Optional
 
 import numpy as np
 
@@ -31,7 +31,7 @@ from .material.policy import MaterialPolicy, to_purchase_orders
 from .production.lotsizing import LotSizingPolicy, safety_stock_units
 from .production.sequencing import Sequencer, SequenceResult
 from .sales.discount import DiscountPolicy, effective_demand, unit_price
-from .state import DailyRecord, MaterialRecord, ProductionOrder, WorldState
+from .state import DailyRecord, MaterialRecord, ProductionOrder, PurchaseOrder, WorldState
 
 # (제품, 생산일, Lot수) -> 처리시간 행렬
 ProcessingTimeProvider = Callable[[str, dt.date, int], np.ndarray]
@@ -110,7 +110,8 @@ class Simulator:
             initial_fg_inventory: Optional[Dict[str, int]] = None,
             initial_mat_inventory: Optional[Dict[str, int]] = None,
             backfill_plan_from: Optional[dt.date] = None,
-            locked_production_plan: Optional[Dict[dt.date, Dict[str, int]]] = None) -> SimResult:
+            locked_production_plan: Optional[Dict[dt.date, Dict[str, int]]] = None,
+            initial_open_orders: Optional[List[PurchaseOrder]] = None) -> SimResult:
         """warmup_days: 초기 과도구간(initial transient) 제거.
 
         시뮬레이션 시작 시점에는 완제품 재고가 0이고 첫 주간계획도 아직 서지 않았으므로,
@@ -129,6 +130,11 @@ class Simulator:
         locked_production_plan: {날짜: {제품: Lot수}}. 이미 지난 결정일에 제출되어
         확정된 주간 생산계획. 주어진 날짜는 재최적화 결과를 덮어쓴다(그날 생산이 없으면
         빈 dict를 넣는다). 남은 기간의 자재 발주·할인은 이 확정 계획을 전제로 계산된다.
+
+        initial_open_orders: 이미 발주해 아직 도착하지 않은 구매주문(in-transit).
+        라운드 중간 상태에서는 현재고만으로 재고포지션을 계산하면 발주잔량이 보이지 않아
+        (s,S) 정책이 같은 물량을 한 번 더 발주한다. 여기에 넣은 주문은 arrival_date에
+        입고되며, 구매비·주문비는 이미 지출된 것으로 보고 다시 청구하지 않는다.
         """
         self.demand.reset(seed)
         state = WorldState(
@@ -140,6 +146,21 @@ class Simulator:
         )
         state.demand_history = {p: {} for p in self.cfg.products}
         state.forecast_cache = {p: {} for p in self.cfg.products}
+        if initial_open_orders:
+            # 도착일이 start 이전이면 이미 입고된 물량이다. 그대로 두면 _receive_materials가
+            # arrival_date == d 인 날을 영영 만나지 못해 조용히 사라지고, 재고포지션이
+            # 과대평가된다. 실측 현재고에 이미 반영돼 있을 테니 넘기지 말 것.
+            stale = [o for o in initial_open_orders if o.arrival_date < start]
+            if stale:
+                raise ValueError(
+                    f"initial_open_orders에 start({start}) 이전 도착 주문이 있다: "
+                    + ", ".join(f"{o.material} {o.qty}@{o.arrival_date}" for o in stale))
+            # 이미 지출이 끝난 주문이므로 복사본만 담는다. _order_materials가 만드는
+            # 신규 주문과 달리 비용 집계(_close_day)에는 들어가지 않는다.
+            state.open_orders.extend(
+                PurchaseOrder(material=o.material, option=o.option, qty=o.qty,
+                              order_date=o.order_date, arrival_date=o.arrival_date)
+                for o in initial_open_orders)
         if backfill_plan_from is not None:
             self._plan_next_week(state, backfill_plan_from)
         if locked_production_plan is not None:

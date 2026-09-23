@@ -23,20 +23,36 @@ from iog_sim.config import SimConfig
 from iog_sim.demand.generator import extend_with_forecast
 from iog_sim.examples.demo_run import POLICIES, build
 from iog_sim.experiment import daily_input_report, weekly_plan_report
+from iog_sim.state import PurchaseOrder
 
 OUTPUT_DIR = Path(__file__).resolve().parent / "reports"
 
-TODAY = dt.date(2026, 9, 22)
+TODAY = dt.date(2026, 9, 23)
 
 # 시스템 "Material inventory in/out summary" 실측값 (Current level)
-CURRENT_MAT_INVENTORY = {"M1": 197_000, "M2": 814_000, "M3": 610_000}
+#   M1: in 1,008,870 / out   785,000
+#   M2: in 3,000,000 / out 2,350,000
+#   M3: in 1,000,000 / out   390,000
+CURRENT_MAT_INVENTORY = {"M1": 223_870, "M2": 650_000, "M3": 610_000}
 # 완제품 재고 실측값 (Current level)
-CURRENT_FG_INVENTORY = {"P1": 103_000, "P2": 5_830}
-# Ledger 화면의 현재 Balance
-CURRENT_BALANCE = -63_708_910
+#   P1: in 785,000 / out 600,000
+#   P2: in 390,000 / out 384,170
+CURRENT_FG_INVENTORY = {"P1": 185_000, "P2": 5_830}
+# Ledger 화면의 현재 Balance (VERIFY: 매일 Ledger에서 읽어 갱신)
+CURRENT_BALANCE = -86_593_780
+
+# 이미 발주해 아직 도착하지 않은 구매주문 = Material plans에서 Delivered date가 None인 행.
+# 넣지 않으면 (s,S) 정책이 발주잔량을 못 보고 같은 물량을 한 번 더 발주한다.
+# 인자 순서: (자재, 옵션, 수량, 발주일, 도착예정일)
+IN_TRANSIT_ORDERS = [
+    PurchaseOrder("M2", "normal", 2_000_000, dt.date(2026, 9, 16), dt.date(2026, 9, 24)),
+    PurchaseOrder("M1", "normal",   300_000, dt.date(2026, 9, 21), dt.date(2026, 9, 24)),
+    PurchaseOrder("M2", "urgent",    96_000, dt.date(2026, 9, 22), dt.date(2026, 9, 24)),
+]
 
 # 지난 결정일에 제출되어 확정된 이번 주 생산계획 (Production 탭에서 읽어 채운다).
 # Job 1개 = 1 Lot = 상품 1,000개. 이 값은 바꿀 수 없으므로 계산의 전제로만 쓴다.
+# (9/22 P1 82 Job은 이미 생산 완료 -> 실측 재고에 반영됨. start 이전 날짜라 루프가 돌지 않는다.)
 LOCKED_PRODUCTION_PLAN = {
     dt.date(2026, 9, 22): {"P1": 82, "P2": 0},
     dt.date(2026, 9, 23): {"P1": 0, "P2": 0},
@@ -78,6 +94,7 @@ def main() -> None:
         initial_mat_inventory=CURRENT_MAT_INVENTORY,
         backfill_plan_from=TODAY - dt.timedelta(days=1),
         locked_production_plan=LOCKED_PRODUCTION_PLAN,
+        initial_open_orders=IN_TRANSIT_ORDERS,
     )
     seq_fn = lambda code, d, lots: sim.sequence_for(code, d, lots).job_ids()  # noqa: E731
 

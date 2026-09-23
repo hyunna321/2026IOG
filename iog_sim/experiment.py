@@ -19,6 +19,7 @@ from typing import Callable, Dict, List, Sequence
 
 import numpy as np
 
+from .config import LOT_SIZE
 from .engine import PolicySet, SimResult, Simulator
 
 
@@ -159,13 +160,21 @@ def weekly_plan_report(result: SimResult, dates: Sequence[dt.date], sequence_fn=
 
       - forecast_P1/P2 : 그날 수요예측치 (Demand 탭). 휴장일은 0.
       - P1_jobs/P2_jobs, *_sequence : 그날 생산할 Lot(Job) 수와 투입 순서 (Production 탭).
+      - P1_short/P2_short : 계획 Job 중 자재가 모자라 시뮬레이션에서 못 돌린 Job 수.
+        0이 아니면 그날 자재가 부족하다는 경고이지 제출값이 아니다.
 
     sequence_fn(code, date, lots) -> List[int]: 시퀀스가 아직 계산되지 않은 날
     (자재 부족으로 생산이 실행되지 않은 날 등)을 채우는 데 쓴다.
+
+    주의: `_produce`는 자재가 모자라면 가능한 Lot만 돌리고 job_sequence를 그 길이로
+    덮어쓴다(n_lots는 계획값 그대로). 그 시퀀스를 그대로 내보내면 제출할 Job 수와
+    시퀀스 길이가 어긋나므로, 길이가 다르면 계획 Job 수 기준으로 다시 만든다.
     """
     import pandas as pd
 
     state = result.state
+    # 실제로 돌아간 Lot 수 (자재 부족 판정용). DailyRecord.produced는 개수 단위다.
+    produced = {(r.date, r.product): r.produced // LOT_SIZE for r in state.daily_records}
     rows = []
     for d in dates:
         row = {"date": d, "weekday": d.strftime("%a")}
@@ -174,9 +183,10 @@ def weekly_plan_report(result: SimResult, dates: Sequence[dt.date], sequence_fn=
             order = state.production_plan.get(d, {}).get(code)
             lots = order.n_lots if order else 0
             seq = order.job_sequence if order else None
-            if lots and not seq and sequence_fn is not None:
+            if lots and len(seq or []) != lots and sequence_fn is not None:
                 seq = sequence_fn(code, d, lots)
             row[f"{code}_jobs"] = lots
             row[f"{code}_sequence"] = seq or []
+            row[f"{code}_short"] = max(0, lots - int(produced.get((d, code), 0)))
         rows.append(row)
     return pd.DataFrame(rows)
