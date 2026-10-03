@@ -1,4 +1,4 @@
-from .mrp import explode_bom  # noqa: F401
+from .mrp import explode_bom, project_lots  # noqa: F401
 from .policy import (  # noqa: F401
     OrderDecision,
     MaterialPolicy,
@@ -6,6 +6,5 @@ from .policy import (  # noqa: F401
     DualSourcingPolicy,
     eoq,
     safety_stock,
-    reorder_point,
     to_purchase_orders,
 )

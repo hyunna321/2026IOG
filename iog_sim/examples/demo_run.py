@@ -23,7 +23,8 @@ from iog_sim.engine import PolicySet, Simulator
 from iog_sim.experiment import cost_decomposition, cost_detail, run_experiment
 from iog_sim.material.policy import DualSourcingPolicy, SsPolicy
 from iog_sim.production.lotsizing import DynamicLotSizing, FixedBatchDays, LotForLot
-from iog_sim.production.sequencing import BestOf, LTWK, SPT, load_processing_times
+from iog_sim.production.safety_stock import EndOfHorizon, SafetyStockRule
+from iog_sim.production.sequencing import BestOf, LTWK, NEH, SPT, Memoized, load_processing_times
 from iog_sim.sales.discount import MarginalProfitOptimizer, NoDiscount
 
 DATA_DIR = Path(__file__).resolve().parent.parent    # iog_sim/iog_sim
@@ -35,19 +36,28 @@ END = dt.date(2026, 3, 14)      # 10주 (앞 2주는 워밍업으로 집계 제�
 
 # --- 1. 실수요 (제공된 CSV 재생) ---------------------------------------------
 
-def _latest_demand_csv(product: str) -> str:
-    """demand_data_{product}_{YYYYMMDD}.csv 중 가장 최근 파일. 파일명이 날짜순이라
-    문자열 정렬 최댓값 = 최신 추출본이다. 매주 최신 CSV로 교체돼도 코드 수정이 필요없다."""
-    matches = sorted((DATA_DIR / "demand").glob(f"demand_data_{product}_*.csv"))
+_DEMAND_SUFFIXES = (".csv", ".xls", ".xlsx")
+
+
+def _latest_demand_file(product: str) -> str:
+    """demand_data_{product}_{YYYYMMDD}.{csv,xls,xlsx} 중 가장 최근 추출본.
+
+    Demand 화면 다운로드는 라운드에 따라 CSV로도 구형 `.xls`로도 떨어지므로 확장자를
+    가리지 않는다. 정렬 기준은 파일명의 YYYYMMDD(=추출일)이고, 같은 날짜가 여러 확장자로
+    있으면 `_DEMAND_SUFFIXES` 순서(CSV 우선)로 고른다. 매주 새 파일을 넣기만 하면 된다."""
+    folder = DATA_DIR / "demand"
+    matches = [p for suffix in _DEMAND_SUFFIXES
+               for p in folder.glob(f"demand_data_{product}_*{suffix}")]
     if not matches:
-        raise FileNotFoundError(f"demand_data_{product}_*.csv 를 찾을 수 없음")
-    return str(matches[-1])
+        raise FileNotFoundError(
+            f"demand_data_{product}_*{{{','.join(_DEMAND_SUFFIXES)}}} 를 찾을 수 없음")
+    return str(max(matches, key=lambda p: (p.stem, -_DEMAND_SUFFIXES.index(p.suffix.lower()))))
 
 
 def make_demand() -> HistoricalReplay:
     return load_historical_replay({
-        "P1": _latest_demand_csv("P1"),
-        "P2": _latest_demand_csv("P2"),
+        "P1": _latest_demand_file("P1"),
+        "P2": _latest_demand_file("P2"),
     })
 
 
@@ -65,8 +75,7 @@ def processing_times(product: str, date: dt.date, n_lots: int) -> np.ndarray:
         _PT_CACHE[key] = load_processing_times(str(path))
     table = _PT_CACHE[key]
     if n_lots > len(table):
-        # 조용히 잘라 내면 makespan이 표 크기 기준으로만 계산돼 인건비가 과소평가되고,
-        # Lot sizing DP는 '거대 배치가 공짜'라고 착각한다. 반드시 터뜨린다.
+        # 조용히 잘라 내면 인건비가 과소평가되고 DP가 '거대 배치가 공짜'라고 착각한다.
         raise ValueError(
             f"{product} {date}: {n_lots} Job 요청, 처리시간표는 {len(table)} Job까지. "
             f"config.MAX_LOTS_PER_DAY를 넘는 계획이 만들어졌다.")
@@ -75,21 +84,25 @@ def processing_times(product: str, date: dt.date, n_lots: int) -> np.ndarray:
 
 # --- 3. 정책 세트 -----------------------------------------------------------
 
-def base_policy(label: str, lot_sizing, discount, z: float = 1.65, service: float = 0.95) -> PolicySet:
+# 실제 투입 순서. 정책끼리 같은 처리시간표를 반복해 풀므로 결과를 공유한다.
+SEQUENCER = Memoized(BestOf([SPT(), LTWK(), NEH()]))
+
+
+def base_policy(label: str, lot_sizing, discount, z: float = 1.65,
+                safety_stock: SafetyStockRule = EndOfHorizon(0.95)) -> PolicySet:
     return PolicySet(
         forecaster={"P1": SimpleExponentialSmoothingForecaster(),
                     "P2": SimpleExponentialSmoothingForecaster()},
         lot_sizing=lot_sizing,
-        # 데모는 빠른 규칙만 사용. 실전에서는 BestOf([SPT(), LTWK(), NEH(), ILS(), GA()])로 교체.
-        sequencer=BestOf([SPT(), LTWK()]),
-        planning_sequencer=LTWK(),
+        sequencer=SEQUENCER,
+        planning_sequencer=LTWK(),       # DP가 수백 번 호출하므로 빠른 규칙 유지
         material={
             "M1": SsPolicy(z=z),
             "M2": DualSourcingPolicy(z_normal=z),
             "M3": SsPolicy(z=z),
         },
         discount=discount,
-        service_level=service,
+        safety_stock=safety_stock,
         label=label,
     )
 

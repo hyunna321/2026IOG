@@ -126,7 +126,9 @@ MATERIALS: Dict[str, MaterialSpec] = {
 }
 
 # BOM: 제품 1개당 자재 소요량
-# VERIFY: 문제소개 PDF의 도식(1개/2개/2개/1개) 판독 결과. 시스템 화면에서 반드시 재확인.
+# P2는 실측 확인됨: 2026-09-27 P2 85 Job(=85,000개) 생산에 M2 170,000 / M3 85,000이 빠졌다.
+# VERIFY: P1({M1:1, M2:2})은 아직 문제소개 PDF 도식 판독값이다. P1 첫 생산 후 Material
+#         inventory의 out qty로 반드시 재확인할 것.
 BOM: Dict[str, Dict[str, int]] = {
     "P1": {"M1": 1, "M2": 2},
     "P2": {"M2": 2, "M3": 1},
@@ -137,18 +139,16 @@ BOM: Dict[str, Dict[str, int]] = {
 class SimConfig:
     """시뮬레이션 실행 옵션 (게임 규칙이 아니라 '가정'에 해당하는 것들)."""
 
-    # 생산 완료 당일 판매 불가 (확정 규칙). 당일 생산분은 익일부터 판매 가능하므로
-    # 엔진은 '판매 -> 생산' 순서로 하루를 돈다. True면 '생산 -> 판매' 순서가 된다.
-    produce_then_sell_same_day: bool = False
-    # 생산 가능일은 제품별 설정(ProductSpec.weekday_production_only)을 따른다.
+    # 당일 생산분 당일 판매 **가능** (2026-09-28 사용자 확정).
+    # 근거: 09-27에 P2 85 Job(85,000개)을 생산한 그날 84,856개(=09-27 실수요)가 팔려
+    # Current level이 144만 남았다. 따라서 엔진은 '생산 -> 판매' 순서로 하루를 돈다.
+    # False로 되돌리면 '판매 -> 생산' 순서가 되고 availability_lag가 1로 올라간다.
+    produce_then_sell_same_day: bool = True
     # 할인 수요 탄력성: 수요배수 = 1 + elasticity * 할인율
     #   문제소개 예시(10% 할인 -> 수요 100->110)는 elasticity = 1.0
     #   Sales 화면 관측치(6% 증가)와 다르므로 실측 로그로 재추정할 것
     discount_elasticity: float = 1.0
     max_discount: float = 0.30
-    # 자재 부족 시 생산 처리 방식: "truncate"(가능한 만큼만) | "fail"(계획 전체 취소)
-    material_shortage_mode: str = "truncate"
-    seed: int = 0
     products: Dict[str, ProductSpec] = field(default_factory=lambda: dict(PRODUCTS))
     materials: Dict[str, MaterialSpec] = field(default_factory=lambda: dict(MATERIALS))
     bom: Dict[str, Dict[str, int]] = field(default_factory=lambda: {k: dict(v) for k, v in BOM.items()})

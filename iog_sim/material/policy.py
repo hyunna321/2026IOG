@@ -3,7 +3,7 @@
 정책 계층을 3단으로 나눈다.
 
   1. 기준 주문량   : EOQ (주문비 vs 재고유지비 균형)
-  2. 재주문점      : ROP = 리드타임 기간 예상소요 + 안전재고(z * σ_LT)
+  2. 재주문점      : s = 리드타임 기간 소요(생산계획 x BOM) + 안전재고(z * σ * sqrt(LT))
   3. 이중 조달     : M2만 해당. 일반(LT8, 25원)으로 기저를 깔고, 긴급(LT2, 50원)으로 예측오차를 메움
 
 이 문제에서 긴급 조달이 특히 중요한 이유
@@ -38,13 +38,9 @@ def eoq(daily_demand: float, order_cost: float, holding_cost_per_unit_day: float
 
 
 def safety_stock(sigma_daily: float, lead_time_days: int, z: float = 1.65) -> float:
-    """σ_LT = σ_일 * sqrt(LT). 수요가 랜덤워크성이면 이 식은 과소추정이므로,
-    백테스트에서 얻은 'LT일 누적 수요 오차' 표준편차를 직접 쓰는 쪽이 정확하다."""
+    """σ_LT = σ_일 * sqrt(LT). σ_일은 자재 소요의 '예측오차'이지 소요 계열의 변동이 아니다
+    (엔진 `_material_sigma`)."""
     return z * sigma_daily * math.sqrt(max(lead_time_days, 0))
-
-
-def reorder_point(daily_demand: float, lead_time_days: int, ss: float) -> float:
-    return daily_demand * lead_time_days + ss
 
 
 # ---------------------------------------------------------------------------
@@ -68,8 +64,8 @@ class MaterialPolicy(ABC):
         date: dt.date,
         state: WorldState,
         spec: MaterialSpec,
-        demand_forecast_units: Dict[dt.date, float],   # 그 자재의 일별 소요 예측
-        sigma_daily: float,
+        requirements: Dict[dt.date, float],   # 그 자재의 일별 소요 (생산계획 x BOM)
+        sigma_daily: float,                   # 일 소요 예측오차 표준편차
     ) -> List[OrderDecision]:
         ...
 
@@ -83,11 +79,11 @@ class SsPolicy(MaterialPolicy):
         self.z = z
         self.cover_days = cover_days   # None이면 EOQ 사용
 
-    def decide(self, date, state, spec, demand_forecast_units, sigma_daily) -> List[OrderDecision]:
+    def decide(self, date, state, spec, requirements, sigma_daily) -> List[OrderDecision]:
         opt = spec.option("normal")
         lt = opt.lead_time_days
         horizon = [date + dt.timedelta(days=i) for i in range(1, lt + 1)]
-        d_lt = sum(demand_forecast_units.get(d, 0.0) for d in horizon)
+        d_lt = sum(requirements.get(d, 0.0) for d in horizon)
         daily = d_lt / max(lt, 1)
 
         ss = safety_stock(sigma_daily, lt, self.z)
@@ -121,14 +117,14 @@ class DualSourcingPolicy(MaterialPolicy):
         self.stockout_cost = stockout_cost
         self.bom_qty = bom_qty
 
-    def decide(self, date, state, spec, demand_forecast_units, sigma_daily) -> List[OrderDecision]:
-        decisions = list(self.base.decide(date, state, spec, demand_forecast_units, sigma_daily))
+    def decide(self, date, state, spec, requirements, sigma_daily) -> List[OrderDecision]:
+        decisions = list(self.base.decide(date, state, spec, requirements, sigma_daily))
 
         urgent = spec.option("urgent")
         normal = spec.option("normal")
         lt_u = urgent.lead_time_days
         window = [date + dt.timedelta(days=i) for i in range(1, lt_u + 1)]
-        need = sum(demand_forecast_units.get(d, 0.0) for d in window)
+        need = sum(requirements.get(d, 0.0) for d in window)
         ss_u = safety_stock(sigma_daily, lt_u, self.z_urgent)
 
         available = state.on_hand(spec.code) + state.in_transit(spec.code, before=window[-1])

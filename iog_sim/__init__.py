@@ -2,12 +2,12 @@
 
 모듈 구성
     config      게임 규칙 상수 (단가, 비용, BOM, 리드타임)
-    calendar    개장일 / 생산가능일 / 리드타임
+    calendar    개장일 / 생산가능일 / 라운드 종료일 / 리드타임
     costs       비용 함수 (Makespan -> 인건비, 작업준비비)
     state       WorldState, 발주/생산 오더, 일별 기록
     demand      수요예측기 + 실현수요 생성기
     production  Lot sizing + Job sequencing
-    material    MRP + 발주정책
+    material    BOM 전개(생산계획 -> 자재 소요) + 발주정책
     sales       할인정책
     engine      일별 이벤트 루프
     ledger      비용 집계 / KPI

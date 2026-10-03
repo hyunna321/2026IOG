@@ -190,3 +190,37 @@ def weekly_plan_report(result: SimResult, dates: Sequence[dt.date], sequence_fn=
             row[f"{code}_short"] = max(0, lots - int(produced.get((d, code), 0)))
         rows.append(row)
     return pd.DataFrame(rows)
+
+
+def material_flow_report(result: SimResult):
+    """Material inventory in/out summary 화면과 같은 단위의 일별 예상값.
+
+    M*_in = 그날 입고, M*_out = 그날 생산 투입, M*_level = 그날 마감 재고(Current level).
+    다음 날 화면 값과 나란히 놓고 대조하는 용도다.
+    """
+    import pandas as pd
+
+    rows: Dict[dt.date, dict] = {}
+    for r in result.state.material_records:
+        row = rows.setdefault(r.date, {"date": r.date})
+        row[f"{r.material}_in"] = r.received
+        row[f"{r.material}_out"] = r.consumed
+        row[f"{r.material}_level"] = r.inventory_end
+    return pd.DataFrame([rows[d] for d in sorted(rows)])
+
+
+def sales_flow_report(result: SimResult):
+    """Sales inventory in/out summary 화면과 같은 단위의 일별 예상값.
+
+    P*_in = 그날 생산 입고, P*_out = 그날 판매, P*_level = 마감 재고, P*_lost = 품절 수량.
+    """
+    import pandas as pd
+
+    rows: Dict[dt.date, dict] = {}
+    for r in result.state.daily_records:
+        row = rows.setdefault(r.date, {"date": r.date})
+        row[f"{r.product}_in"] = r.produced
+        row[f"{r.product}_out"] = r.sold
+        row[f"{r.product}_level"] = r.fg_inventory_end
+        row[f"{r.product}_lost"] = r.lost_sales
+    return pd.DataFrame([rows[d] for d in sorted(rows)])

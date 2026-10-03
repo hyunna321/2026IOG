@@ -16,10 +16,8 @@
 
 따라서 할인은 '재고 상태 의존 정책'이다: d* = f(재고 / 예상수요).
 
-**당일 생산분 당일 판매 불가와의 상호작용 (중요)**
-이 규칙 때문에 '오늘 팔 하루치 + 내일 팔 하루치'가 상시 재고로 묶인다. 이 재고는 잉여가 아니라
-규칙이 강제하는 운전자본이므로, 할인 판단의 기준선(재고/수요 비율)은 1.0이 아니라 2.0이다.
-이를 놓치면 필수 버퍼를 할인으로 털어 다음 날 품절을 자초한다.
+**필수 버퍼**: 당일 생산분을 당일 팔 수 있어도 재고 하루치는 잉여가 아니다. Lot sizing이 배치를
+몰아 잡아 무생산일이 흔하고, 자재가 모자라면 계획 Job이 잘리기 때문이다(`MarginalProfitOptimizer`).
 """
 
 from __future__ import annotations
@@ -57,9 +55,9 @@ class DiscountPolicy(ABC):
     ) -> float:
         """scheduled_receipts: {날짜 -> 그날 판매 가능해지는 생산 입고량}.
 
-        당일 생산분 당일 판매 불가 규칙 때문에, '언제 물건이 더 들어오는가'를 모르면
-        잉여재고가 며칠 남을지 추정할 수 없다. 모르면 None으로 두되, 그 경우
-        정책은 보수적으로(할인을 덜 하는 쪽으로) 동작해야 한다.
+        '언제 물건이 더 들어오는가'를 모르면 잉여재고가 며칠 남을지 추정할 수 없다.
+        모르면 None으로 두되, 그 경우 정책은 보수적으로(할인을 덜 하는 쪽으로) 동작해야 한다.
+        엔진은 생산일 + `availability_lag`를 키로 이 표를 만든다(`_decide_discount`).
         """
 
 
@@ -71,35 +69,13 @@ class NoDiscount(DiscountPolicy):
         return 0.0
 
 
-class InventoryRatioRule(DiscountPolicy):
-    """재고/예상수요 비율이 임계치를 넘을 때만 할인. 단순하고 설명 가능한 기준선."""
-
-    name = "ratio"
-
-    def __init__(self, trigger_ratio: float = 2.0, step: float = 0.05, max_steps: int = 3):
-        # trigger_ratio 기본값이 2.0인 이유: 당일 생산분 당일 판매 불가 규칙 때문에
-        # '오늘 팔 하루치 + 내일 팔 하루치'가 상시 재고로 묶인다. 비율 2.0 이하는 잉여가 아니다.
-        self.trigger_ratio, self.step, self.max_steps = trigger_ratio, step, max_steps
-
-    def decide(self, date, product, inventory, demand_forecast, elasticity, max_discount=0.30,
-               scheduled_receipts=None) -> float:
-        d0 = demand_forecast.get(date, 0.0)
-        if d0 <= 0:
-            return 0.0
-        ratio = inventory / d0
-        if ratio <= self.trigger_ratio:
-            return 0.0
-        steps = min(self.max_steps, int((ratio - self.trigger_ratio) / 0.3) + 1)
-        return min(max_discount, steps * self.step)
-
-
 class MarginalProfitOptimizer(DiscountPolicy):
     """할인율 그리드에서 (매출 - 재고비 - 품절비)를 최대화.
 
     **필수 버퍼 보호 (required_cover)**
-    당일 생산분은 당일 판매할 수 없다. 즉 어느 날이든 '그날 팔 물량'은 전날까지 만들어져
-    재고로 들고 있어야 한다. 이 하루치 재고는 잉여가 아니라 **규칙이 강제하는 운전자본**이다.
-    이것을 잉여로 오인해 할인으로 털면, 다음 날 팔 물건이 사라져 품절비 250원/개·일을 문다.
+    당일 생산분을 당일 팔 수 있어도 하루치 재고는 여전히 필요하다. Lot sizing이 배치를 몰아
+    잡아 생산이 0인 날이 흔하고, 자재가 모자라면 그날 Job이 잘리기 때문이다.
+    이 하루치를 잉여로 오인해 할인으로 털면, 다음 날 팔 물건이 사라져 품절비 250원/개·일을 문다.
     (스모크 런에서 실제로 관측: 할인 적용 시 품절비 7M -> 88M, Balance 206M -> 25M)
 
     따라서 할인 대상은 `재고 - required_cover × 익일수요`를 넘는 부분뿐이며,
@@ -171,20 +147,3 @@ class MarginalProfitOptimizer(DiscountPolicy):
                 best_d, best_net = d, net
         return best_d
 
-
-# ---------------------------------------------------------------------------
-# 탄력성 추정 — 실측 로그가 쌓이는 대로 갱신
-# ---------------------------------------------------------------------------
-
-def estimate_elasticity(observations: Sequence[tuple]) -> float:
-    """observations: [(할인율 d, 실제판매/기준수요 - 1), ...] -> ε (원점 통과 OLS).
-
-    Sales 화면의 '적용 할인율'과 '실제 수요 대비 판매 증가율'을 매일 기록해 누적할 것.
-    표본이 5개 미만이면 문제소개 예시값 ε=1.0을 유지한다.
-    """
-    if len(observations) < 5:
-        return 1.0
-    d = np.array([o[0] for o in observations], dtype=float)
-    lift = np.array([o[1] for o in observations], dtype=float)
-    denom = float(np.dot(d, d))
-    return float(np.dot(d, lift) / denom) if denom > 0 else 1.0

@@ -5,18 +5,18 @@
 계단식(floor(makespan/100))으로 연동되므로 100시간 경계를 넘기느냐가 실제 이득을 가른다.
 
 규칙별 성격
-  - FCFS/SPT/LTWK/MWKR : 정렬 한 번으로 끝나는 기준선. Lot sizing DP가 수백 번
-    호출하는 planning_sequencer 자리에는 이 중 하나를 쓴다.
-  - NEH                : flow shop 전용 삽입 휴리스틱(Taillard 가속). 실제 투입
-    순서를 정하는 sequencer 자리에 쓸 만큼 좋고, 그만큼 느리다.
-  - BestOf             : 여러 규칙을 모두 돌려 Makespan 최소 해를 채택.
+  - SPT / LTWK : 정렬 한 번으로 끝나는 기준선. Lot sizing DP가 수백 번 호출하는
+    planning_sequencer 자리에 쓴다. SPT는 시스템 Auto와 같은 로직이다.
+  - NEH        : flow shop 삽입 휴리스틱(Taillard 가속). 300 Job에서 약 0.5초,
+    Makespan은 SPT보다 약 10% 짧다. 실제 투입 순서(sequencer)에 쓴다.
+  - BestOf     : 여러 규칙을 모두 돌려 Makespan 최소 해를 채택.
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import List, Optional, Sequence
+from typing import List, Sequence
 
 import numpy as np
 
@@ -50,7 +50,6 @@ class SequenceResult:
     order: List[int]          # 0-based
     makespan: float
     algorithm: str
-    evaluations: int = 0
 
     def job_ids(self) -> List[int]:
         """시스템 입력용 1-based Job ID 순서."""
@@ -61,18 +60,8 @@ class Sequencer(ABC):
     name = "base"
 
     @abstractmethod
-    def solve(self, p: np.ndarray, time_budget: float = 0.0) -> SequenceResult:
+    def solve(self, p: np.ndarray) -> SequenceResult:
         ...
-
-
-class FCFS(Sequencer):
-    """Job ID 순서 그대로. 최하위 baseline."""
-
-    name = "FCFS"
-
-    def solve(self, p, time_budget=0.0) -> SequenceResult:
-        order = list(range(p.shape[0]))
-        return SequenceResult(order, makespan(p, order), self.name, 1)
 
 
 class SPT(Sequencer):
@@ -83,10 +72,10 @@ class SPT(Sequencer):
     def __init__(self, machine: int = 0):
         self.machine = machine
 
-    def solve(self, p, time_budget=0.0) -> SequenceResult:
+    def solve(self, p) -> SequenceResult:
         order = list(np.argsort(p[:, self.machine], kind="stable"))
         return SequenceResult([int(i) for i in order], makespan(p, order),
-                              f"{self.name}(M{self.machine + 1})", 1)
+                              f"{self.name}(M{self.machine + 1})")
 
 
 class LTWK(Sequencer):
@@ -94,19 +83,9 @@ class LTWK(Sequencer):
 
     name = "LTWK"
 
-    def solve(self, p, time_budget=0.0) -> SequenceResult:
+    def solve(self, p) -> SequenceResult:
         order = list(np.argsort(p.sum(axis=1), kind="stable"))
-        return SequenceResult([int(i) for i in order], makespan(p, order), self.name, 1)
-
-
-class MWKR(Sequencer):
-    """총 작업량 내림차순 (LTWK의 역순)."""
-
-    name = "MWKR"
-
-    def solve(self, p, time_budget=0.0) -> SequenceResult:
-        order = list(np.argsort(-p.sum(axis=1), kind="stable"))
-        return SequenceResult([int(i) for i in order], makespan(p, order), self.name, 1)
+        return SequenceResult([int(i) for i in order], makespan(p, order), self.name)
 
 
 class NEH(Sequencer):
@@ -119,13 +98,12 @@ class NEH(Sequencer):
 
     name = "NEH"
 
-    def solve(self, p, time_budget=0.0) -> SequenceResult:
+    def solve(self, p) -> SequenceResult:
         n, m = p.shape
         if n == 0:
-            return SequenceResult([], 0.0, self.name, 0)
+            return SequenceResult([], 0.0, self.name)
         seeds = [int(i) for i in np.argsort(-p.sum(axis=1), kind="stable")]
         seq: List[int] = [seeds[0]]
-        evals = 0
         for job in seeds[1:]:
             j = len(seq)
             sub = p[seq]                              # (j, m)
@@ -164,11 +142,10 @@ class NEH(Sequencer):
                     val = acc + tail
                     if val > ms:
                         ms = val
-                evals += 1
                 if ms < best_ms:
                     best_ms, best_pos = ms, i
             seq.insert(best_pos, job)
-        return SequenceResult(seq, makespan(p, seq), self.name, evals)
+        return SequenceResult(seq, makespan(p, seq), self.name)
 
 
 class BestOf(Sequencer):
@@ -179,32 +156,39 @@ class BestOf(Sequencer):
     def __init__(self, members: Sequence[Sequencer]):
         self.members = list(members)
 
-    def solve(self, p, time_budget=0.0) -> SequenceResult:
-        share = time_budget / max(len(self.members), 1)
-        results = [m.solve(p, share) for m in self.members]
-        best = min(results, key=lambda r: r.makespan)
-        return SequenceResult(best.order, best.makespan,
-                              f"{self.name}[{best.algorithm}]",
-                              sum(r.evaluations for r in results))
+    def solve(self, p) -> SequenceResult:
+        best = min((m.solve(p) for m in self.members), key=lambda r: r.makespan)
+        return SequenceResult(best.order, best.makespan, f"{self.name}[{best.algorithm}]")
 
 
-DEFAULT_SEQUENCER = BestOf([FCFS(), SPT(), LTWK(), MWKR(), NEH()])
+class Memoized(Sequencer):
+    """같은 처리시간 행렬에 대한 결과를 재사용한다 (여러 시뮬레이터가 공유 가능).
+
+    처리시간표는 (제품, 요일, Job 수)로 정해지므로 정책 비교처럼 같은 행렬이 반복될 때 NEH를 아낀다.
+    """
+
+    def __init__(self, inner: Sequencer):
+        self.inner = inner
+        self.name = inner.name
+        self._cache: dict = {}
+
+    def solve(self, p) -> SequenceResult:
+        key = (p.shape, p.tobytes())
+        if key not in self._cache:
+            self._cache[key] = self.inner.solve(p)
+        return self._cache[key]
 
 
 # ---------------------------------------------------------------------------
 # 처리시간 테이블 로더
 # ---------------------------------------------------------------------------
 
-def load_processing_times(path: str, n_jobs: Optional[int] = None) -> np.ndarray:
-    """ProcessingTimeTable.zip 의 t_{jobs}_{machines}_{weekday}.csv 로딩.
-
-    n_jobs가 주어지면 JobID 1..n_jobs만 잘라 쓴다 (생산량 n Lot -> Job 1..n).
-    """
+def load_processing_times(path: str) -> np.ndarray:
+    """ProcessingTimeTable의 t_{jobs}_{machines}_{weekday}.csv -> (n_jobs, n_machines) 행렬."""
     import pandas as pd
 
     df = pd.read_csv(path)
     num = df.select_dtypes(include=[np.number])
     # JobID 컬럼이 있으면 제외
     cols = [c for c in num.columns if str(c).lower() not in ("jobid", "job_id", "job", "id")]
-    p = num[cols].to_numpy(dtype=float)
-    return p[:n_jobs] if n_jobs else p
+    return num[cols].to_numpy(dtype=float)

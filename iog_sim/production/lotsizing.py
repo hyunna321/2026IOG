@@ -11,8 +11,7 @@ P1 일 수요가 7만 개(70 Lot) 수준이면 2일치 통합(=70 Lot을 1일 �
 setup 1회(5,000,000원)를 아끼므로 유리하지만, 3일치부터는 (3)의 잔업비가 급격히 붙는다.
 따라서 이 문제는 "감으로 2~3일 묶기"가 아니라 makespan을 실제로 평가하는 DP로 풀어야 한다.
 
-또 하나 구조적 제약: P2 수요는 365일이지만 생산은 평일만 가능하다.
-=> 금요일 배치는 반드시 토·일 수요까지 포함해야 하며, 이때 P2의 주말 재고비는 불가피 비용이다.
+P1은 평일만 생산하므로 금요일 배치가 토·일(공휴일 포함) 수요까지 포함해야 한다. P2는 매일 생산 가능하다.
 """
 
 from __future__ import annotations
@@ -60,13 +59,11 @@ class LotSizingPolicy(ABC):
         production_days: Sequence[dt.date],
         opening_inventory: int,
         makespan_oracle: MakespanOracle,
-        safety_stock: int = 0,
-        availability_lag: int = 1,
+        availability_lag: int = 0,
     ) -> LotPlan:
-        """availability_lag: 생산일 D의 산출물이 D+lag부터 판매 가능.
+        """demand_by_date에는 안전재고 증분이 이미 더해져 있다 (엔진 `_plan_week`).
 
-        IOG는 당일 생산분을 당일 팔 수 없으므로 lag=1이 기본이다. 이 한 칸 때문에
-        '수요일에 맞춰 생산'이라는 L4L의 정의 자체가 '수요 전날까지 생산'으로 바뀐다.
+        availability_lag: 생산일 D의 산출물이 D+lag부터 판매 가능 (현행 규칙 0 = 당일 판매).
         """
 
 
@@ -75,18 +72,18 @@ class LotSizingPolicy(ABC):
 # ---------------------------------------------------------------------------
 
 class LotForLot(LotSizingPolicy):
-    """수요일에 맞춰 당일(또는 직전 생산가능일) 생산. setup을 최대한 많이 지불하는 안."""
+    """수요일마다 그날(또는 직전 생산가능일) 생산. setup을 최대한 많이 지불하는 기준선."""
 
     name = "L4L"
 
     def plan(self, product, demand_by_date, production_days, opening_inventory,
-             makespan_oracle, safety_stock=0, availability_lag=1) -> LotPlan:
+             makespan_oracle, availability_lag=0) -> LotPlan:
         plan = LotPlan(product=product.code)
         inv = opening_inventory
         prod_days = sorted(production_days)
         for d in sorted(demand_by_date):
-            need = demand_by_date[d] + (safety_stock if d == max(demand_by_date) else 0)
-            # 이 수요를 감당할 가장 늦은 생산가능일 (당일 생산분은 당일 판매 불가)
+            need = demand_by_date[d]
+            # 이 수요를 감당할 가장 늦은 생산가능일
             deadline = d - dt.timedelta(days=availability_lag)
             candidates = [pd for pd in prod_days if pd <= deadline]
             if not candidates:
@@ -116,7 +113,7 @@ class FixedBatchDays(LotSizingPolicy):
         self.n_days = n_days
 
     def plan(self, product, demand_by_date, production_days, opening_inventory,
-             makespan_oracle, safety_stock=0, availability_lag=1) -> LotPlan:
+             makespan_oracle, availability_lag=0) -> LotPlan:
         plan = LotPlan(product=product.code)
         prod_days = sorted(production_days)
         demand_days = sorted(demand_by_date)
@@ -125,8 +122,6 @@ class FixedBatchDays(LotSizingPolicy):
         while i < len(demand_days):
             window = demand_days[i:i + self.n_days]
             need = sum(demand_by_date[d] for d in window)
-            if window[-1] == demand_days[-1]:
-                need += safety_stock
             deadline = window[0] - dt.timedelta(days=availability_lag)
             candidates = [pd for pd in prod_days if pd <= deadline]
             if not candidates:
@@ -158,14 +153,14 @@ class DynamicLotSizing(LotSizingPolicy):
     batch_cost 안에서 makespan_oracle을 호출하므로, 잔업 경계(70시간)를 넘는 순간의
     비용 점프가 DP에 그대로 반영된다. 이것이 단순 EOQ/WW와 결정적으로 다른 부분이다.
 
-    계산량: 수요일 7일 * 생산일 5일 수준이라 완전탐색 DP가 그대로 가능하다.
-    makespan_oracle 호출이 비싸므로 (날짜, Lot수) 캐시를 반드시 쓸 것.
+    계산량: 수요일 8일 수준이라 완전탐색 DP가 그대로 가능하다.
+    makespan_oracle 호출이 비싸므로 엔진이 (제품, 날짜, Lot수) 캐시를 둔다.
     """
 
     name = "DP"
 
     def plan(self, product, demand_by_date, production_days, opening_inventory,
-             makespan_oracle, safety_stock=0, availability_lag=1) -> LotPlan:
+             makespan_oracle, availability_lag=0) -> LotPlan:
         demand_days = sorted(demand_by_date)
         n = len(demand_days)
         if n == 0:
@@ -173,7 +168,6 @@ class DynamicLotSizing(LotSizingPolicy):
 
         prod_days = sorted(production_days)
         need = [demand_by_date[d] for d in demand_days]
-        need[-1] += safety_stock
         # 기초재고는 앞에서부터 차감
         inv = opening_inventory
         for k in range(n):
@@ -250,7 +244,7 @@ class DynamicLotSizing(LotSizingPolicy):
 # ---------------------------------------------------------------------------
 
 def _evaluate(plan: LotPlan, product: ProductSpec, demand_by_date, opening_inventory,
-              makespan_oracle, availability_lag: int = 1) -> LotPlan:
+              makespan_oracle, availability_lag: int = 0) -> LotPlan:
     """계획의 예상 비용 내역을 채운다 (설정·인건비·잔업·재고비·예상품절).
 
     생산일 D의 산출물은 D+lag부터 판매 가능하므로, 가용시점 기준으로 재고를 굴린다.
@@ -291,15 +285,3 @@ def _evaluate(plan: LotPlan, product: ProductSpec, demand_by_date, opening_inven
     plan.expected_cost = setup + labor + holding + shortage * product.stockout_cost
     return plan
 
-
-def safety_stock_units(sigma_cum: float, service_level: float = 0.95) -> int:
-    """완제품 안전재고. 품절비 250원 vs 재고비 30원/일이므로 임계비율이 매우 높다.
-
-    뉴스벤더 임계비율 = Cu / (Cu + Co) = 250 / (250 + 30) ≈ 0.893
-    => 하루짜리 관점이면 서비스수준 약 89%가 최적. 다만 잉여재고는 다음 날에도
-       팔 수 있으므로(폐기 없음) 실제 과잉비용은 30원/일보다 작다.
-       따라서 0.90~0.97 구간을 what-if로 스윕해 확정할 것.
-    """
-    from scipy.stats import norm
-
-    return int(max(0, round(norm.ppf(service_level) * sigma_cum)))

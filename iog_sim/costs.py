@@ -61,31 +61,3 @@ def batch_production_cost(makespan: float, product: ProductSpec, n_lots: int) ->
         overtime_hours=overtime_hours(makespan, product),
         makespan=makespan,
     )
-
-
-# --- 한계 비용: lot sizing / 할인 정책의 의사결정 근거 -----------------------
-
-def marginal_holding_cost(qty: int, days: int, unit_holding: int) -> int:
-    """qty개를 days일 보유할 때의 재고유지비."""
-    return qty * days * unit_holding
-
-
-def breakeven_lots_for_setup(product: ProductSpec, carry_days: int = 1) -> float:
-    """작업준비비 1회를 아끼려고 며칠치를 미리 만들 때, 재고비로 상쇄되는 Lot 수.
-
-    예) P1: setup 5,000,000 / (1,000개 * 1일 * 30원) = 166.7 Lot·일
-        즉 하루 앞서 만드는 물량이 166 Lot(=166,000개)을 넘으면 배치 통합이 손해.
-    """
-    per_lot_day = 1_000 * product.holding_cost
-    return product.setup_cost / (per_lot_day * max(carry_days, 1))
-
-
-def urgent_sourcing_premium_vs_stockout(
-    unit_premium: int, bom_qty: int, stockout_cost: int
-) -> float:
-    """긴급 조달 프리미엄 대비 품절비 비율.
-
-    예) M2 원두: 프리미엄 25원/개 * 2개/제품 = 50원 vs 품절비 250원/개·일
-        -> 비율 0.2. 품절이 예상되면 긴급 조달이 압도적으로 유리하다.
-    """
-    return (unit_premium * bom_qty) / stockout_cost

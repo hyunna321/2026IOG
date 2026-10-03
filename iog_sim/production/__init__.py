@@ -2,13 +2,11 @@ from .sequencing import (  # noqa: F401
     makespan,
     SequenceResult,
     Sequencer,
-    FCFS,
     SPT,
     LTWK,
-    MWKR,
     NEH,
     BestOf,
-    DEFAULT_SEQUENCER,
+    Memoized,
     load_processing_times,
 )
 from .lotsizing import (  # noqa: F401
@@ -18,5 +16,12 @@ from .lotsizing import (  # noqa: F401
     FixedBatchDays,
     DynamicLotSizing,
     lots_for,
-    safety_stock_units,
+)
+from .safety_stock import (  # noqa: F401
+    SafetyStockRule,
+    NoSafetyStock,
+    EndOfHorizon,
+    CumulativeModelSigma,
+    CumulativeEmpiricalSigma,
+    stockout_critical_ratio,
 )

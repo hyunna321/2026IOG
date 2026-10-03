@@ -29,7 +29,6 @@ class ProductionOrder:
     date: dt.date
     n_lots: int
     job_sequence: Optional[List[int]] = None   # 1-based Job ID 순열
-    planned_makespan: Optional[float] = None
 
 
 @dataclass
@@ -68,14 +67,16 @@ class MaterialRecord:
 
 @dataclass
 class WorldState:
-    today: dt.date
     fg_inventory: Dict[str, int] = field(default_factory=dict)      # 완제품 재고
     mat_inventory: Dict[str, int] = field(default_factory=dict)     # 자재 재고
     open_orders: List[PurchaseOrder] = field(default_factory=list)
     production_plan: Dict[dt.date, Dict[str, ProductionOrder]] = field(default_factory=dict)
     discount_plan: Dict[dt.date, Dict[str, float]] = field(default_factory=dict)
-    demand_history: Dict[str, Dict[dt.date, int]] = field(default_factory=dict)
     forecast_cache: Dict[str, Dict[dt.date, int]] = field(default_factory=dict)
+    # 제품별 1-step 예측오차 표준편차 (자재 안전재고의 근거). 주간계획 때 갱신.
+    forecast_sigma: Dict[str, float] = field(default_factory=dict)
+    # 생산계획이 확정된 마지막 날. 이후 날짜의 자재 소요는 직전 주 패턴으로 추정한다.
+    planned_through: Optional[dt.date] = None
     daily_records: List[DailyRecord] = field(default_factory=list)
     material_records: List[MaterialRecord] = field(default_factory=list)
 

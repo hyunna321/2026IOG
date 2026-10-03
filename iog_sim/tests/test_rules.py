@@ -189,16 +189,22 @@ def test_sunday_has_no_producer_within_its_own_week():
     assert [x for x in week if cal.is_production_day(x) and x <= sunday] == []
 
 
-def test_market_day_follows_hardcoded_holiday_set_only():
-    """휴장일은 요일 계산이 아니라 holidays 집합 멤버십으로만 판정한다.
+def test_market_day_is_weekday_minus_hardcoded_holidays():
+    """주말은 자동 휴장, 평일은 holidays에 있을 때만 휴장."""
+    cal = GameCalendar(holidays={dt.date(2026, 9, 25)})
+    assert cal.is_market_day(dt.date(2026, 9, 21))      # 월
+    assert not cal.is_market_day(dt.date(2026, 9, 25))  # 금, 공휴일
+    assert not cal.is_market_day(dt.date(2026, 9, 26))  # 토, 목록에 없어도 휴장
+    assert not cal.is_market_day(dt.date(2026, 9, 27))  # 일
 
-    주말이어도 holidays에 없으면 개장일, 평일이어도 holidays에 있으면 휴장일이다.
-    """
-    cal = GameCalendar(holidays={dt.date(2026, 9, 25), dt.date(2026, 9, 26)})
-    assert cal.is_market_day(dt.date(2026, 9, 21))      # 월, holidays에 없음
-    assert not cal.is_market_day(dt.date(2026, 9, 26))  # 토, holidays에 명시됨
-    assert not cal.is_market_day(dt.date(2026, 9, 25))  # 금, holidays에 명시됨
-    assert cal.is_market_day(dt.date(2026, 9, 27))      # 일, holidays에 없으므로 개장일
+
+def test_october_holidays():
+    """10-05 개천절 대체공휴일, 10-09 한글날."""
+    cal = GameCalendar()
+    assert not cal.is_market_day(dt.date(2026, 10, 5))
+    assert not cal.is_market_day(dt.date(2026, 10, 9))
+    assert cal.is_market_day(dt.date(2026, 10, 6))
+    assert not cal.is_market_day(dt.date(2026, 10, 10))  # 토
 
 
 def test_max_job_per_day_matches_processing_time_table():
@@ -218,8 +224,8 @@ def test_p1_demand_days_match_demand_screen_for_planning_week():
     assert not any(cal.is_market_day(d) for d in closed_days)
 
 
-def test_default_calendar_uses_hardcoded_september_holidays():
-    """MARKET_HOLIDAYS_BY_MONTH에 하드코딩된 2026-09 휴장일(24~27일) 확인."""
+def test_default_calendar_september_holidays():
+    """추석 평일분(24·25) + 주말(26·27)."""
     cal = GameCalendar()
     for day in (24, 25, 26, 27):
         assert not cal.is_market_day(dt.date(2026, 9, day))
@@ -244,10 +250,10 @@ def test_expense_buckets_partition_total():
     assert s.balance == 901
 
 
-# --- 당일 생산분 당일 판매 불가 --------------------------------------------
+# --- 당일 생산분 당일 판매 (produce_then_sell_same_day) ----------------------
 
-def test_same_day_production_is_not_sellable():
-    """재고 0인 날에 생산이 일어나도 그날 판매는 0이어야 한다."""
+def _same_day_sim(same_day: bool):
+    """재고 0인 날에 첫 생산이 일어나는 상황을 만들어 그날 판매를 관측한다."""
     import datetime as dt
 
     import numpy as np
@@ -280,14 +286,30 @@ def test_same_day_production_is_not_sellable():
         discount=NoDiscount(),
         label="test",
     )
-    sim = Simulator(SimConfig(), cal, HistoricalReplay(series=series), pol,
+    cfg = SimConfig()
+    cfg.produce_then_sell_same_day = same_day
+    sim = Simulator(cfg, cal, HistoricalReplay(series=series), pol,
                     lambda product, date, n: table[:n])
     res = sim.run(start, end, seed=0)
 
-    first_prod = [r for r in res.state.daily_records
-                  if r.produced > 0 and r.fg_inventory_end == r.produced]
+    first_prod = [r for r in res.state.daily_records if r.produced > 0]
     assert first_prod, "생산이 한 번도 일어나지 않았다"
-    r = first_prod[0]
+    return first_prod[0]
+
+
+def test_same_day_production_is_sellable_by_default():
+    """현행 규칙(당일 판매 가능): 첫 생산일에 그날 수요만큼 바로 팔려야 한다.
+
+    09-27 관측(P2 85,000개 생산 -> 같은 날 84,856개 판매, 잔량 144)이 근거다.
+    """
+    r = _same_day_sim(same_day=True)
+    assert r.sold > 0, "당일 생산분이 당일 팔리지 않았다"
+    assert r.fg_inventory_end == r.produced - r.sold
+
+
+def test_same_day_production_is_not_sellable_when_flag_off():
+    """플래그를 끄면 옛 가정(익일부터 판매)으로 되돌아가야 한다."""
+    r = _same_day_sim(same_day=False)
     assert r.sold == 0, "당일 생산분이 당일 판매되었다"
     assert r.fg_inventory_end == r.produced
 
@@ -316,3 +338,202 @@ def test_l4l_consumes_opening_inventory_on_unproducible_days():
     )
     # 화·수 수요 20,000개는 전량 생산되어야 한다 (기초재고는 일·월에 전부 소진)
     assert plan.total_lots() == 20
+
+
+# --- 주간계획 재계획 / 실측 수요 보존 ----------------------------------------
+
+def test_replanning_a_week_clears_previous_assignment():
+    """같은 주를 두 번 계획하면 이전 배정이 남으면 안 된다.
+
+    `lots_by_date`는 Lot 0인 날을 담지 않으므로, 덮어쓰기만 하면 '전엔 잡혔는데
+    이번엔 안 잡힌 날'이 옛 값 그대로 제출표에 실린다.
+    """
+    import datetime as dt
+
+    import numpy as np
+
+    from iog_sim.calendar import GameCalendar
+    from iog_sim.config import SimConfig
+    from iog_sim.demand.forecaster import NaiveForecaster
+    from iog_sim.demand.generator import HistoricalReplay
+    from iog_sim.engine import PolicySet, Simulator
+    from iog_sim.material.policy import SsPolicy
+    from iog_sim.production.lotsizing import LotForLot
+    from iog_sim.production.sequencing import LTWK
+    from iog_sim.sales.discount import NoDiscount
+    from iog_sim.state import ProductionOrder, WorldState
+
+    cal, cfg = GameCalendar(), SimConfig()
+    decision = dt.date(2026, 10, 3)
+    week = cal.next_week(decision)
+
+    # 수요는 평탄하게 깔아 두고, 유령이 박힌 날만 관찰한다.
+    hist = {d: 10_000 for d in cal.date_range(decision - dt.timedelta(days=60), decision)}
+    pol = PolicySet(
+        forecaster={"P1": NaiveForecaster(), "P2": NaiveForecaster()},
+        lot_sizing=LotForLot(), sequencer=LTWK(), planning_sequencer=LTWK(),
+        material={m: SsPolicy() for m in ("M1", "M2", "M3")},
+        discount=NoDiscount(), label="test")
+    table = np.random.default_rng(0).uniform(30, 62, size=(500, 20))
+    sim = Simulator(cfg, cal, HistoricalReplay(series={"P1": dict(hist), "P2": dict(hist)}),
+                    pol, lambda product, date, n: table[:n])
+
+    state = WorldState(fg_inventory={"P1": 10_000_000, "P2": 10_000_000},
+                       mat_inventory={m: 0 for m in cfg.materials})
+    state.forecast_cache = {p: {} for p in cfg.products}
+    # 이전(backfill) 계획이 남긴 유령 배정. 재고를 잔뜩 줬으므로 재계획은 이 날 Lot을
+    # 잡지 않는다 -> 지워지지 않으면 999가 그대로 남는다.
+    ghost = week[1]
+    state.production_plan[ghost] = {"P1": ProductionOrder("P1", ghost, 999)}
+
+    sim._plan_week(state, decision, week)
+
+    order = state.production_plan.get(ghost, {}).get("P1")
+    assert order is None or order.n_lots != 999, "이전 주간계획 배정이 남았다"
+
+
+def test_extend_with_forecast_keeps_published_actuals():
+    """미래 구간이라도 이미 값이 있는 날은 예측으로 덮지 않는다."""
+    import datetime as dt
+
+    from iog_sim.demand.forecaster import NaiveForecaster
+    from iog_sim.demand.generator import HistoricalReplay, extend_with_forecast
+
+    origin = dt.date(2026, 9, 29)
+    series = {d: 100 for d in [origin - dt.timedelta(days=i) for i in range(1, 21)]}
+    known = origin + dt.timedelta(days=1)
+    series[known] = 777                                  # 시스템이 먼저 공시한 실측치
+    replay = HistoricalReplay(series={"P2": dict(series)})
+
+    window = [origin + dt.timedelta(days=i) for i in range(1, 5)]
+    extend_with_forecast(replay, {"P2": NaiveForecaster()}, {"P2": window}, window,
+                         origin=origin)
+
+    assert replay.series["P2"][known] == 777, "공시된 실측치가 예측으로 덮였다"
+    assert replay.series["P2"][window[-1]] == 100, "빈 날짜는 예측으로 채워야 한다"
+
+
+# --- 자재 소요 = 생산계획 x BOM / 라운드 종료 / backfill ----------------------
+
+def _flat_sim(start, end, demand=20_000, calendar=None):
+    """평탄한 수요 + 랜덤 처리시간표로 만든 소형 시뮬레이터."""
+    from iog_sim.config import SimConfig
+    from iog_sim.demand.forecaster import NaiveForecaster
+    from iog_sim.demand.generator import HistoricalReplay
+    from iog_sim.engine import PolicySet, Simulator
+    from iog_sim.material.policy import DualSourcingPolicy, SsPolicy
+    from iog_sim.production.lotsizing import DynamicLotSizing
+    from iog_sim.production.sequencing import LTWK
+    from iog_sim.sales.discount import NoDiscount
+
+    cal = calendar or GameCalendar()
+    days = cal.date_range(start - dt.timedelta(days=90), end)
+    series = {"P1": {d: (demand if cal.is_market_day(d) else 0) for d in days},
+              "P2": {d: demand for d in days}}
+    table = np.random.default_rng(0).uniform(30, 62, size=(500, 20))
+    pol = PolicySet(
+        forecaster={"P1": NaiveForecaster(), "P2": NaiveForecaster()},
+        lot_sizing=DynamicLotSizing(), sequencer=LTWK(), planning_sequencer=LTWK(),
+        material={"M1": SsPolicy(), "M2": DualSourcingPolicy(), "M3": SsPolicy()},
+        discount=NoDiscount(), label="test")
+    return Simulator(SimConfig(), cal, HistoricalReplay(series=series), pol,
+                     lambda product, date, n: table[:n])
+
+
+def test_project_lots_repeats_last_planned_weekday():
+    from iog_sim.material.mrp import project_lots
+
+    cal = GameCalendar()
+    p1 = {"P1": cal.is_market_day}
+    thu, mon = dt.date(2026, 10, 8), dt.date(2026, 10, 5)          # 10-05 대체공휴일
+    plan = {thu: {"P1": 294}, mon - dt.timedelta(days=7): {"P1": 271}}
+    out = project_lots(plan, planned_through=dt.date(2026, 10, 10),
+                       days=[thu, thu + dt.timedelta(days=7), mon + dt.timedelta(days=7),
+                             dt.date(2026, 10, 17)], producing=p1)
+    assert out[thu]["P1"] == 294
+    assert out[thu + dt.timedelta(days=7)]["P1"] == 294     # 다음 목요일 = 직전 목요일 패턴
+    # 다음 월요일은 공휴일(0)이 아니라 그 전 개장 월요일(271)을 따른다
+    assert out[mon + dt.timedelta(days=7)]["P1"] == 271
+    assert out[dt.date(2026, 10, 17)] == {}                  # 토요일
+
+
+def test_material_requirements_follow_production_plan():
+    """소요는 생산일에 생산량만큼 잡혀야 한다 (수요일 기준 예측이 아니라)."""
+    from iog_sim.state import ProductionOrder, WorldState
+
+    sim = _flat_sim(dt.date(2026, 10, 3), dt.date(2026, 10, 10))
+    state = WorldState()
+    fri, sat = dt.date(2026, 10, 9), dt.date(2026, 10, 10)
+    state.production_plan[fri] = {"P1": ProductionOrder("P1", fri, 290),
+                                  "P2": ProductionOrder("P2", fri, 175)}
+    state.planned_through = sat
+    state.forecast_sigma = {"P1": 3_000.0, "P2": 4_000.0}
+
+    req = sim._material_requirements(state, dt.date(2026, 10, 3))
+    assert req["M1"][fri] == 290_000
+    assert req["M2"][fri] == 2 * (290_000 + 175_000)
+    assert req["M3"][fri] == 175_000
+    assert req["M3"][sat] == 0
+    # 계획 밖 다음 금요일: P2는 같은 패턴, P1은 10-09가 한글날이라 원본으로 쓰지 않는다
+    assert req["M3"][fri + dt.timedelta(days=7)] == 175_000
+    assert req["M1"][fri + dt.timedelta(days=7)] == 0
+    # sigma는 소요 계열의 덩어리짐이 아니라 예측오차에서 온다
+    assert sim._material_sigma(state, "M2") == pytest.approx(np.hypot(2 * 3_000, 2 * 4_000))
+    assert sim._material_sigma(state, "M1") == pytest.approx(3_000)
+
+
+def test_round_end_stops_simulation_planning_and_late_orders():
+    from iog_sim.calendar import GameCalendar as Cal
+
+    end = dt.date(2026, 2, 4)                                  # 수요일
+    cal = Cal(round_ends=[end])
+    sim = _flat_sim(dt.date(2026, 1, 3), end, calendar=cal)
+    res = sim.run(dt.date(2026, 1, 3), dt.date(2026, 2, 28))
+
+    assert res.end == end
+    assert max(r.date for r in res.state.daily_records) == end
+    assert all(day <= end for day, by in res.state.production_plan.items() if by)
+    assert all(o.arrival_date <= end for o in res.state.open_orders
+               if o.order_date >= dt.date(2026, 1, 10))
+
+
+def test_backfill_plans_only_the_current_week():
+    """화요일 시작 backfill이 다음 주(일~) 날짜에 오더를 만들면 안 된다."""
+    tue = dt.date(2026, 1, 13)
+    sim = _flat_sim(tue, tue)
+    res = sim.run(tue, tue, backfill_current_week=True)
+    sat = dt.date(2026, 1, 17)
+    assert res.state.planned_through == sat
+    assert all(day <= sat for day, by in res.state.production_plan.items() if by)
+
+
+# --- 안전재고: 판매기회비 > 재고유지비 비대칭 -----------------------------------
+
+def test_critical_ratio_reflects_stockout_vs_holding():
+    """Cu = 판매기회비 250 + 놓친 마진, Co = 재고유지비 30 -> 임계비율이 0.9를 넘는다."""
+    from iog_sim.production.safety_stock import stockout_critical_ratio
+
+    p1 = stockout_critical_ratio(P1, unit_material_cost=80)       # M1 30 + M2 2x25
+    assert p1 == pytest.approx((250 + 170) / (250 + 170 + 30))
+    # 라운드 종료 직전에는 남는 재고를 못 팔아 Co에 자재비가 붙는다 -> 버퍼를 낮춘다
+    assert stockout_critical_ratio(P1, 80, round_end=True) < p1
+
+
+def test_cumulative_safety_stock_holds_buffer_every_day():
+    """누적 규칙은 주중 매일 '누적 생산 >= 누적 예측 + ss_h'를 만족해야 한다."""
+    from iog_sim.demand.forecaster import ForecastResult
+    from iog_sim.production.lotsizing import LotForLot
+    from iog_sim.production.safety_stock import CumulativeModelSigma, EndOfHorizon
+
+    days = [dt.date(2026, 10, 12) + dt.timedelta(days=i) for i in range(5)]   # 월~금
+    fc = ForecastResult(origin=None, dates=days, mu=np.full(5, 100_000.0),
+                        sigma=10_000 * np.sqrt(np.arange(1, 6)))
+    for rule, mid_week_buffer in ((CumulativeModelSigma(0.95), True), (EndOfHorizon(0.95), False)):
+        ss = rule.cumulative_targets(fc, [], None, 0.95)
+        inc = np.diff(np.concatenate([[0], ss]))
+        plan = LotForLot().plan(P1, {d: 100_000 + int(i) for d, i in zip(days, inc)}, days, 0,
+                                lambda day, lots: 1000.0)
+        cum_prod = np.cumsum([plan.lots_by_date.get(d, 0) * 1000 for d in days])
+        cum_dem = np.cumsum([100_000] * 5)
+        assert np.all(cum_prod - cum_dem >= ss)
+        assert ((cum_prod - cum_dem)[1] >= 10_000) == mid_week_buffer
