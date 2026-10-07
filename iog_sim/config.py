@@ -33,7 +33,7 @@ class ProductSpec:
     channel: str
     price: int                  # 판매단가 (원/개)
     holding_cost: int           # 완제품 재고유지비 (원/개·일)
-    stockout_cost: int          # 판매기회비 (원/개·일)
+    stockout_cost: int          # 판매기회비 (원/개, 못 판 수량에 1회 부과 — 장부로 검증)
     setup_cost: int             # 작업준비비 (원/배치)
     regular_makespan: int       # 정규시간 기준 Makespan (시간)
     market_days_only: bool      # True면 주식시장 개장일에만 수요 발생
@@ -88,7 +88,7 @@ PRODUCTS: Dict[str, ProductSpec] = {
         price=350,
         holding_cost=30,
         stockout_cost=250,
-        setup_cost=2_000_000,
+        setup_cost=4_000_000,     # 시스템 Ledger 실측 (문제소개 23쪽의 2,000,000과 다름)
         regular_makespan=7_000,
         market_days_only=False,
         weekday_production_only=False,     # 토·일에도 생산 가능
