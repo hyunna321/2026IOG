@@ -364,14 +364,17 @@ class Simulator:
                             req: Dict[dt.date, float], horizon_end: dt.date) -> List[PurchaseOrder]:
         """라운드 안에 쓸 수 없는 발주를 버린다.
 
-        - 종료일 뒤에 도착하는 주문은 통째로 뺀다.
+        - 마지막 유효 생산일(종료일 - lag) 뒤에 도착하는 주문은 통째로 뺀다.
+          현재 규칙(당일 판매 가능, lag=0)에서는 종료일 당일 도착분까지 쓸 수 있고,
+          당일 판매 불가(lag=1)라면 종료일 당일 도착분은 라운드 안에 팔 수 없어 뺀다.
         - 종료일이 소요 시계 안에 들어오면, 남은 소요 - 재고포지션을 넘는 수량을 깎는다.
           (s,S)·EOQ는 운영이 계속된다고 보고 S까지 채우므로 그대로 두면 남는 자재에 구매비·주문비를 낸다.
         """
-        kept = [o for o in orders if o.arrival_date <= self._round_end]
+        last_prod = self._round_end - dt.timedelta(days=self._lag)   # 마지막 유효 생산일
+        kept = [o for o in orders if o.arrival_date <= last_prod]
         if self._round_end > horizon_end:
             return kept
-        room = sum(q for day, q in req.items() if day <= self._round_end) \
+        room = sum(q for day, q in req.items() if day <= last_prod) \
             - state.inventory_position(mat)
         trimmed = []
         for o in kept:
