@@ -233,6 +233,23 @@ def test_default_calendar_september_holidays():
     assert cal.is_market_day(dt.date(2026, 9, 28))
 
 
+
+def test_past_holidays_match_p1_demand_file():
+    """과거 평일 중 P1 수요가 없는 날 = 휴장일 (파일이 비어 있는 2016-11-24~2018-05-03 제외)."""
+    import os
+    pytest.importorskip("xlrd")
+    from iog_sim.demand.generator import load_demand_csv
+    path = os.path.join(os.path.dirname(__file__), "..", "demand", "demand_data_P1_20261002.xls")
+    p1 = load_demand_csv(path)
+    cal = GameCalendar()
+    gap = (dt.date(2016, 11, 24), dt.date(2018, 5, 3))
+    d, last = min(p1), max(p1)
+    while d <= last:
+        if d.weekday() < 5 and not (gap[0] <= d <= gap[1]):
+            assert cal.is_market_day(d) == (p1.get(d, 0) > 0), d
+        d += dt.timedelta(days=1)
+    assert not cal.is_market_day(dt.date(2026, 8, 17))   # 광복절 대체공휴일
+
 # --- Ledger 버킷 ------------------------------------------------------------
 
 def test_expense_buckets_partition_total():
