@@ -537,3 +537,33 @@ def test_cumulative_safety_stock_holds_buffer_every_day():
         cum_dem = np.cumsum([100_000] * 5)
         assert np.all(cum_prod - cum_dem >= ss)
         assert ((cum_prod - cum_dem)[1] >= 10_000) == mid_week_buffer
+
+
+# --- 자재 소요 추정: 휴장일 다음 주 -------------------------------------------
+
+def test_project_lots_does_not_zero_the_week_after_a_holiday():
+    """2026-10-09 사례: 확정 계획은 10/4~10/10, 지난주 월(10/5)·금(10/9)이 휴장.
+
+    다음 주 월·금의 P1 생산을 같은 요일에서 찾다가 입력 범위 밖(9/28, 10/2)에 닿으면
+    0이 아니라 최근 생산일 평균으로 추정해야 한다. 0으로 두면 M1을 리드타임 안에 발주하지 못한다.
+    """
+    from iog_sim.material.mrp import project_lots
+
+    cal = GameCalendar()
+    d = dt.date
+    locked = {
+        d(2026, 10, 4): {"P2": 86}, d(2026, 10, 5): {"P2": 86},
+        d(2026, 10, 6): {"P1": 275, "P2": 86}, d(2026, 10, 7): {"P1": 275, "P2": 86},
+        d(2026, 10, 8): {"P1": 294, "P2": 86}, d(2026, 10, 9): {"P2": 175}, d(2026, 10, 10): {},
+    }
+    producing = {"P1": lambda day: day.weekday() < 5 and cal.is_market_day(day),
+                 "P2": lambda day: True}
+    days = [d(2026, 10, 10) + dt.timedelta(days=i) for i in range(1, 8)]     # 10/11(일) ~ 10/17(토)
+    proj = project_lots(locked, d(2026, 10, 10), days, producing)
+
+    recent_avg = round((275 + 275 + 294) / 3)
+    assert proj[d(2026, 10, 12)]["P1"] == recent_avg          # 지난주 월요일 휴장 -> 평균
+    assert proj[d(2026, 10, 16)]["P1"] == recent_avg          # 지난주 금요일 휴장 -> 평균
+    assert proj[d(2026, 10, 13)]["P1"] == 275                  # 같은 요일 계획이 있으면 그대로
+    assert proj[d(2026, 10, 15)]["P1"] == 294
+    assert "P2" not in proj[d(2026, 10, 17)]                   # 원본 계획이 실제 0이면 0 유지
