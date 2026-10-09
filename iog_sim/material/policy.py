@@ -104,18 +104,24 @@ class DualSourcingPolicy(MaterialPolicy):
     """M2 전용. 일반 경로로 기저 보충 + 긴급 경로로 결품 방지.
 
     긴급 발동 조건 (둘 다 만족할 때만)
-      1) 긴급 리드타임(2일) 내에 자재가 바닥날 것으로 예상됨
+      1) 긴급발주가 닿는 첫날(오늘 + 긴급 LT)부터 slack_days일 안에 예상 재고가 안전재고 아래로 떨어짐
       2) 구제되는 제품 수량 * (품절비 - 긴급프리미엄) > 주문비
+
+    예상 재고는 날짜별로 굴린다: 현재고 + 그날 도착 예정 - 그날 소요. 긴급으로도 닿지 않는 날
+    (오늘 ~ 긴급 도착 전날)의 부족분은 생산이 잘려 소모되지 않으므로 0에서 멈추고, 긴급발주
+    수량에도 넣지 않는다. slack_days만큼 미리 보는 것은 '마지막 가능일'에야 발주해 하루만 놓쳐도
+    되돌릴 수 없게 되는 것을 막기 위해서다 (2026-10-14 M2 긴급 사례).
     """
 
     name = "dual"
 
     def __init__(self, z_normal: float = 1.65, z_urgent: float = 2.33,
-                 stockout_cost: int = 250, bom_qty: int = 2):
+                 stockout_cost: int = 250, bom_qty: int = 2, slack_days: int = 1):
         self.base = SsPolicy(z=z_normal)
         self.z_urgent = z_urgent
         self.stockout_cost = stockout_cost
         self.bom_qty = bom_qty
+        self.slack_days = slack_days
 
     def decide(self, date, state, spec, requirements, sigma_daily) -> List[OrderDecision]:
         decisions = list(self.base.decide(date, state, spec, requirements, sigma_daily))
@@ -123,12 +129,25 @@ class DualSourcingPolicy(MaterialPolicy):
         urgent = spec.option("urgent")
         normal = spec.option("normal")
         lt_u = urgent.lead_time_days
-        window = [date + dt.timedelta(days=i) for i in range(1, lt_u + 1)]
-        need = sum(requirements.get(d, 0.0) for d in window)
+        first = date + dt.timedelta(days=lt_u)                 # 오늘 긴급발주가 처음 닿는 날
+        last = first + dt.timedelta(days=self.slack_days)
         ss_u = safety_stock(sigma_daily, lt_u, self.z_urgent)
 
-        available = state.on_hand(spec.code) + state.in_transit(spec.code, before=window[-1])
-        gap = (need + ss_u) - available
+        arrivals: Dict[dt.date, float] = {}
+        for o in state.open_orders:
+            if o.material == spec.code and not o.received and date < o.arrival_date <= last:
+                arrivals[o.arrival_date] = arrivals.get(o.arrival_date, 0.0) + o.qty
+        inv = float(state.on_hand(spec.code))
+        lowest: Optional[float] = None
+        day = date + dt.timedelta(days=1)
+        while day <= last:
+            inv += arrivals.get(day, 0.0) - requirements.get(day, 0.0)
+            if day < first:
+                inv = max(inv, 0.0)        # 긴급으로도 못 막는 부족: 생산이 잘려 소모되지 않는다
+            else:
+                lowest = inv if lowest is None else min(lowest, inv)
+            day += dt.timedelta(days=1)
+        gap = ss_u - lowest if lowest is not None else 0.0
         if gap <= 0:
             return decisions
 
@@ -138,7 +157,7 @@ class DualSourcingPolicy(MaterialPolicy):
         if benefit > spec.order_cost:
             decisions.append(OrderDecision(
                 spec.code, "urgent", int(round(gap)),
-                f"긴급: 2일내 부족 {gap:,.0f} / 기대이익 {benefit:,.0f} > 주문비 {spec.order_cost:,}"))
+                f"긴급: {first:%m-%d}~{last:%m-%d} 부족 {gap:,.0f} / 기대이익 {benefit:,.0f} > 주문비 {spec.order_cost:,}"))
         return decisions
 
 

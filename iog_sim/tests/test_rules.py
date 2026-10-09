@@ -567,3 +567,29 @@ def test_project_lots_does_not_zero_the_week_after_a_holiday():
     assert proj[d(2026, 10, 13)]["P1"] == 275                  # 같은 요일 계획이 있으면 그대로
     assert proj[d(2026, 10, 15)]["P1"] == 294
     assert "P2" not in proj[d(2026, 10, 17)]                   # 원본 계획이 실제 0이면 0 유지
+
+
+# --- M2 긴급발주 판단 ---------------------------------------------------------
+
+def test_urgent_m2_ignores_unfixable_tomorrow_and_orders_one_day_early():
+    """긴급(LT 2일)은 오늘 주문하면 모레 닿는다.
+
+    - 내일 부족은 긴급으로도 못 막으므로 발주하지 않고, 수량에도 넣지 않는다.
+    - 긴급이 닿는 날 + 하루(slack) 안의 부족은 오늘 발주한다 ('마지막 가능일'에 몰리지 않게).
+    - 그보다 먼 부족은 아직 이르므로 다음 날 다시 판단한다.
+    """
+    from iog_sim.config import MATERIALS
+    from iog_sim.material.policy import DualSourcingPolicy
+    from iog_sim.state import WorldState
+
+    spec, d0, pol = MATERIALS["M2"], dt.date(2026, 10, 13), DualSourcingPolicy()
+
+    def urgent_qty(on_hand, req_by_offset):
+        st = WorldState(mat_inventory={"M2": on_hand})
+        req = {d0 + dt.timedelta(days=k): q for k, q in req_by_offset.items()}
+        return sum(x.qty for x in pol.decide(d0, st, spec, req, 0.0) if x.option == "urgent")
+
+    assert urgent_qty(100_000, {1: 300_000}) == 0                                   # 내일만 부족
+    assert urgent_qty(500_000, {1: 200_000, 2: 200_000, 3: 200_000}) == 100_000      # 3일 뒤 부족
+    assert urgent_qty(100_000, {1: 300_000, 2: 150_000}) == 150_000                  # 내일분은 수량 제외
+    assert urgent_qty(500_000, {4: 600_000}) == 0                                    # 아직 이름
