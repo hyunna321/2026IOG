@@ -32,7 +32,7 @@ OUTPUT_DIR = Path(__file__).resolve().parent / "reports"
 # ▼▼▼ 입력 ① 매일 갱신 ▼▼▼  (어제 20시 틱 이후 화면 값)
 # ############################################################################
 
-TODAY = dt.date(2026, 10, 10)
+TODAY = dt.date(2026, 10, 11)
 
 # [Material 화면] Material inventory in/out summary
 #   자재: (Total in, Total out, Current level).  Current level이 시뮬레이션 시작 재고가 된다.
@@ -47,6 +47,7 @@ MATERIAL_INVENTORY_INOUT = {
 #   입고일이 None인 행만 입고예정으로 쓴다. 빠뜨리면 같은 물량을 한 번 더 발주한다.
 #   도착 예정일은 발주일 + 리드타임(config)으로 계산한다.
 MATERIAL_PLANS = [
+    ("M1", "normal", 855_079, dt.date(2026, 10, 10), None),
     ("M1", "normal", 100_000, dt.date(2026, 10, 9), None),
 ]
 
@@ -55,11 +56,11 @@ MATERIAL_PLANS = [
 #   모르는 칸은 None (검산만 건너뛴다).
 SALES_INVENTORY_INOUT = {
     "P1": (1_919_000, 1_880_000, 39_000),
-    "P2": (1_115_000, 1_015_699, 99_301),            # VERIFY: Total in/out 화면 값으로 채울 것
+    "P2": (1_115_000, 1_098_353, 16_647),            # VERIFY: Total in/out 화면 값으로 채울 것
 }
 
 # [Ledger 화면] Balance. expected_balance 열의 기준선일 뿐 발주·할인·계획에는 영향이 없다.
-CURRENT_BALANCE = -77_504_370
+CURRENT_BALANCE = -54_782_177
 
 # ############################################################################
 # ▼▼▼ 입력 ② 토요일마다 갱신 ▼▼▼  (제출해서 확정된 이번 주 Production 계획)
