@@ -189,7 +189,11 @@ def weekly_plan_report(result: SimResult, dates: Sequence[dt.date], sequence_fn=
             row[f"{code}_sequence"] = seq or []
             row[f"{code}_short"] = max(0, lots - int(produced.get((d, code), 0)))
         rows.append(row)
-    return pd.DataFrame(rows)
+    # 라운드 마지막 주처럼 dates가 비어도 열은 남겨 둔다 (CSV 저장·시퀀스 출력이 열 이름을 찾는다)
+    columns = ["date", "weekday"] + [f"{kind}_{code}" if kind == "forecast" else f"{code}_{kind}"
+                                     for code in ("P1", "P2")
+                                     for kind in ("forecast", "jobs", "sequence", "short")]
+    return pd.DataFrame(rows, columns=columns)
 
 
 def material_flow_report(result: SimResult):

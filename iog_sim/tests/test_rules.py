@@ -610,3 +610,15 @@ def test_urgent_m2_ignores_unfixable_tomorrow_and_orders_one_day_early():
     assert urgent_qty(500_000, {1: 200_000, 2: 200_000, 3: 200_000}) == 100_000      # 3일 뒤 부족
     assert urgent_qty(100_000, {1: 300_000, 2: 150_000}) == 150_000                  # 내일분은 수량 제외
     assert urgent_qty(500_000, {4: 600_000}) == 0                                    # 아직 이름
+
+
+def test_weekly_plan_report_keeps_columns_when_no_days_left():
+    """라운드 마지막 주(일~금)에는 차주 제출 대상이 없다. 빈 표라도 열이 있어야 CSV 저장이 된다."""
+    from types import SimpleNamespace
+    from iog_sim.experiment import weekly_plan_report
+    from iog_sim.examples.current_state_report import _flatten
+    from iog_sim.state import WorldState
+    frame = weekly_plan_report(SimpleNamespace(state=WorldState()), [])
+    assert frame.empty
+    assert {"P1_sequence", "P2_sequence", "P1_jobs", "forecast_P2"} <= set(frame.columns)
+    _flatten(frame)
