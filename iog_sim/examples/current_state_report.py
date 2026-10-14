@@ -251,6 +251,21 @@ def _write_snapshot(history: Dict[str, dict], today: dt.date, snapshot: dict) ->
     print(f"전날 대조 기록 저장: {SNAPSHOT_PATH.name} (current_state_report.py와 함께 커밋)")
 
 
+def _print_warnings(lines: List[str], title: str) -> None:
+    """터미널에서 놓치지 않도록 느낌표 테두리로 감싼다."""
+    if not lines:
+        return
+    bar = "!" * 78
+    print()
+    print(bar)
+    print(f"!!!  {title}")
+    print(bar)
+    for line in lines:
+        print(f"!!!  {line}")
+    print(bar)
+    print()
+
+
 def main() -> None:
     cal, cfg = GameCalendar(), SimConfig()
     mat_inventory = {m: v[2] for m, v in MATERIAL_INVENTORY_INOUT.items()}
@@ -263,19 +278,17 @@ def main() -> None:
     for o in open_orders:
         print(f"  입고예정  : {o.material} {o.option:6s} {o.qty:>11,}  발주 {o.order_date}"
               f" -> 도착 {o.arrival_date}")
-    for w in check_inputs(cfg, TODAY):
-        print(f"  ! {w}")
     bom_errors = check_bom(cfg)
-    for e in bom_errors:
-        print(f"  !! {e}")
     if bom_errors and not SKIP_BOM_CHECK:
+        _print_warnings(bom_errors, "[중단] BOM 검산 실패 - 리포트를 멈춥니다")
         raise SystemExit(
             "\n[중단] 자재 Total out과 제품 Total in이 BOM으로 맞지 않습니다.\n"
             "  Material·Sales 화면 값을 같은 날(어제 20시 정산 이후) 화면에서 다시 옮겨 적으세요.\n"
             "  화면 값 자체가 어긋난 것을 확인했을 때만 SKIP_BOM_CHECK = True로 두고 실행하세요.")
     history = _load_snapshots()
-    for w in check_against_snapshot(history, TODAY):
-        print(f"  ! {w}")
+    warnings = (check_inputs(cfg, TODAY) + bom_errors
+                + check_against_snapshot(history, TODAY))
+    _print_warnings(warnings, "입력 경고 - 아래를 확인하기 전에는 시스템에 입력하지 마세요")
     if (TODAY - dt.timedelta(days=1)).isoformat() not in history:
         print("  (어제 대조 기록 없음 -> 전날 대조 생략)")
 
@@ -354,6 +367,9 @@ def main() -> None:
     _save({"this_week_rest": _flatten(rest), "next_week_plan": _flatten(upcoming),
            "daily_input": daily, "material_flow": mat_flow, "sales_flow": sales_flow})
     _write_snapshot(history, TODAY, make_snapshot(res, TODAY, bom_ok=not bom_errors))
+    if warnings:
+        # 출력이 길어 맨 위 경고가 화면 밖으로 밀려나므로 끝에서 한 번 더 보여 준다
+        _print_warnings(warnings, f"다시 알림: 입력 경고 {len(warnings)}건 (맨 위 [입력 확인] 참고)")
 
 
 def _flatten(frame: pd.DataFrame) -> pd.DataFrame:

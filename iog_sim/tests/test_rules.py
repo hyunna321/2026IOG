@@ -624,7 +624,7 @@ def test_weekly_plan_report_keeps_columns_when_no_days_left():
     _flatten(frame)
 
 
-def test_report_stops_when_bom_check_fails(monkeypatch):
+def test_report_stops_when_bom_check_fails(monkeypatch, capsys):
     """10/13 사례: M1 세 값만 전날 화면에서 옮겨 적어 M1 out != BOM x P1 생산. 리포트를 멈춰야 한다."""
     import iog_sim.examples.current_state_report as r
     from iog_sim.config import SimConfig
@@ -642,6 +642,8 @@ def test_report_stops_when_bom_check_fails(monkeypatch):
     monkeypatch.setattr(r, "SKIP_BOM_CHECK", False)
     with pytest.raises(SystemExit):
         r.main()
+    out = capsys.readouterr().out
+    assert "!" * 78 in out and "!!!  BOM 검산 M1" in out          # 눈에 띄는 경고 테두리
 
     # 같은 날 화면 값이면 통과
     monkeypatch.setattr(r, "MATERIAL_INVENTORY_INOUT", {
