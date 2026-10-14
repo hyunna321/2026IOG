@@ -112,6 +112,9 @@ OBSERVED_DEMAND: Dict[str, Dict[dt.date, int]] = {
 # ▲▲▲ 입력 끝 ▲▲▲
 # ############################################################################
 
+# 화면 값끼리 BOM 검산이 어긋나면 실행을 멈춘다. 시스템 화면 자체가 어긋난 것을 확인한 날만 True.
+SKIP_BOM_CHECK = False
+
 POLICY = next(p for p in POLICIES if p.label == "DP+한계이익할인")
 
 
@@ -138,16 +141,6 @@ def check_inputs(cfg: SimConfig, today: dt.date) -> List[str]:
                 warnings.append(f"{name} {code}: in {total_in:,} - out {total_out:,}"
                                 f" != Current level {level:,}")
 
-    # 자재 Total out = BOM x 제품 Total in (Sales in은 생산 입고량)
-    sales_in = {p: v[0] for p, v in SALES_INVENTORY_INOUT.items()}
-    for mat, (_, mat_out, _) in MATERIAL_INVENTORY_INOUT.items():
-        users = {p: bom[mat] for p, bom in cfg.bom.items() if mat in bom}
-        if mat_out is None or any(sales_in.get(p) is None for p in users):
-            continue
-        expected = sum(sales_in[p] * k for p, k in users.items())
-        if expected != mat_out:
-            warnings.append(f"BOM 검산 {mat}: out {mat_out:,} != BOM x 생산 {expected:,}")
-
     for mat, option, qty, order_date, delivered in MATERIAL_PLANS:
         if delivered is None:
             arrival = order_date + dt.timedelta(
@@ -156,6 +149,24 @@ def check_inputs(cfg: SimConfig, today: dt.date) -> List[str]:
                 warnings.append(f"Material plans {mat} {option} {qty:,} ({order_date}):"
                                 f" 예정일 {arrival}이 지났는데 미입고 -> 오늘 도착으로 가정")
     return warnings
+
+
+def check_bom(cfg: SimConfig) -> List[str]:
+    """자재 Total out = BOM x 제품 Total in (Sales in은 생산 입고량).
+
+    어긋나면 한쪽 표를 다른 날 화면에서 옮겨 적은 것이다. 그대로 돌리면 자재 재고가 틀려
+    발주량이 틀린다 (10/13: M1만 전날 값 -> 126,000개 과대 -> 10/16 P1 126 Job 부족).
+    """
+    errors = []
+    sales_in = {p: v[0] for p, v in SALES_INVENTORY_INOUT.items()}
+    for mat, (_, mat_out, _) in MATERIAL_INVENTORY_INOUT.items():
+        users = {p: bom[mat] for p, bom in cfg.bom.items() if mat in bom}
+        if mat_out is None or any(sales_in.get(p) is None for p in users):
+            continue
+        expected = sum(sales_in[p] * k for p, k in users.items())
+        if expected != mat_out:
+            errors.append(f"BOM 검산 {mat}: out {mat_out:,} != BOM x 생산 {expected:,}")
+    return errors
 
 
 def main() -> None:
@@ -172,6 +183,14 @@ def main() -> None:
               f" -> 도착 {o.arrival_date}")
     for w in check_inputs(cfg, TODAY):
         print(f"  ! {w}")
+    bom_errors = check_bom(cfg)
+    for e in bom_errors:
+        print(f"  !! {e}")
+    if bom_errors and not SKIP_BOM_CHECK:
+        raise SystemExit(
+            "\n[중단] 자재 Total out과 제품 Total in이 BOM으로 맞지 않습니다.\n"
+            "  Material·Sales 화면 값을 같은 날(어제 20시 정산 이후) 화면에서 다시 옮겨 적으세요.\n"
+            "  화면 값 자체가 어긋난 것을 확인했을 때만 SKIP_BOM_CHECK = True로 두고 실행하세요.")
 
     deadline = cal.next_decision_day(TODAY)      # 이번 주 제출 마감 (토)
     plan_week = cal.next_week(deadline)          # 그 제출의 대상 = 차주 일~토

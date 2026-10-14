@@ -622,3 +622,31 @@ def test_weekly_plan_report_keeps_columns_when_no_days_left():
     assert frame.empty
     assert {"P1_sequence", "P2_sequence", "P1_jobs", "forecast_P2"} <= set(frame.columns)
     _flatten(frame)
+
+
+def test_report_stops_when_bom_check_fails(monkeypatch):
+    """10/13 사례: M1 세 값만 전날 화면에서 옮겨 적어 M1 out != BOM x P1 생산. 리포트를 멈춰야 한다."""
+    import iog_sim.examples.current_state_report as r
+    from iog_sim.config import SimConfig
+    monkeypatch.setattr(r, "MATERIAL_INVENTORY_INOUT", {
+        "M1": (2_059_400, 1_919_000, 140_400),          # 전날 값 (실제 out 2,145,000)
+        "M2": (9_541_377, 6_818_000, 2_723_377),
+        "M3": (1_576_760, 1_264_000, 312_760),
+    })
+    monkeypatch.setattr(r, "SALES_INVENTORY_INOUT", {
+        "P1": (2_145_000, 2_131_000, 14_000),
+        "P2": (1_264_000, 1_264_000, 0),
+    })
+    errors = r.check_bom(SimConfig())
+    assert len(errors) == 1 and "M1" in errors[0]
+    monkeypatch.setattr(r, "SKIP_BOM_CHECK", False)
+    with pytest.raises(SystemExit):
+        r.main()
+
+    # 같은 날 화면 값이면 통과
+    monkeypatch.setattr(r, "MATERIAL_INVENTORY_INOUT", {
+        "M1": (2_159_400, 2_145_000, 14_400),
+        "M2": (9_541_377, 6_818_000, 2_723_377),
+        "M3": (1_576_760, 1_264_000, 312_760),
+    })
+    assert r.check_bom(SimConfig()) == []
