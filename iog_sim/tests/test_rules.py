@@ -650,3 +650,49 @@ def test_report_stops_when_bom_check_fails(monkeypatch):
         "M3": (1_576_760, 1_264_000, 312_760),
     })
     assert r.check_bom(SimConfig()) == []
+
+
+def _snapshot_history(r, today):
+    """10/12 입력 + 10/12 계획(P1 226, P2 83)대로 정산됐을 때의 기대 누계."""
+    prev = (today - dt.timedelta(days=1)).isoformat()
+    return {prev: {"bom_ok": True, "screen": {}, "expected": {
+        "material_in": {"M1": 2_159_400, "M2": 9_541_377, "M3": 1_576_760},
+        "material_out": {"M1": 2_145_000, "M2": 6_818_000, "M3": 1_264_000},
+        "sales_in": {"P1": 2_145_000, "P2": 1_264_000}}}}
+
+
+def test_snapshot_check_flags_skipped_tick_and_passes_normal_day(monkeypatch):
+    import iog_sim.examples.current_state_report as r
+    today = dt.date(2026, 10, 13)
+    history = _snapshot_history(r, today)
+    # 정상: 10/13 실제 화면 (10/12 정산 반영)
+    monkeypatch.setattr(r, "MATERIAL_INVENTORY_INOUT", {
+        "M1": (2_159_400, 2_145_000, 14_400), "M2": (9_541_377, 6_818_000, 2_723_377),
+        "M3": (1_576_760, 1_264_000, 312_760)})
+    monkeypatch.setattr(r, "SALES_INVENTORY_INOUT", {
+        "P1": (2_145_000, 2_131_000, 14_000), "P2": (1_264_000, 1_264_000, 0)})
+    assert r.check_against_snapshot(history, today) == []
+    # 정산 누락(09-29처럼): 화면이 10/12 그대로 -> BOM은 맞지만 생산·소모·입고가 비어 있음
+    monkeypatch.setattr(r, "MATERIAL_INVENTORY_INOUT", {
+        "M1": (2_059_400, 1_919_000, 140_400), "M2": (9_541_377, 6_200_000, 3_341_377),
+        "M3": (1_576_760, 1_181_000, 395_760)})
+    monkeypatch.setattr(r, "SALES_INVENTORY_INOUT", {
+        "P1": (1_919_000, 1_880_000, 39_000), "P2": (1_181_000, 1_181_000, 0)})
+    from iog_sim.config import SimConfig
+    assert r.check_bom(SimConfig()) == []                 # BOM 검산으로는 못 잡는 경우
+    warnings = r.check_against_snapshot(history, today)
+    assert any("P1 제품 Total in" in w for w in warnings)
+    assert any("M1 자재 Total in" in w for w in warnings)
+
+
+def test_snapshot_check_skips_missing_or_bad_baseline(monkeypatch):
+    import iog_sim.examples.current_state_report as r
+    today = dt.date(2026, 10, 13)
+    monkeypatch.setattr(r, "MATERIAL_INVENTORY_INOUT", {
+        "M1": (1, 1, 0), "M2": (1, 1, 0), "M3": (1, 1, 0)})
+    assert r.check_against_snapshot({}, today) == []                      # 어제 기록 없음
+    history = _snapshot_history(r, today)
+    history[(today - dt.timedelta(days=1)).isoformat()]["bom_ok"] = False
+    assert r.check_against_snapshot(history, today) == []                 # 어제 입력이 틀렸던 날
+    older = {(today - dt.timedelta(days=3)).isoformat(): _snapshot_history(r, today).popitem()[1]}
+    assert r.check_against_snapshot(older, today) == []                   # 어제 기록이 아님

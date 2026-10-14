@@ -13,8 +13,9 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import pandas as pd
 
@@ -27,6 +28,8 @@ from iog_sim.experiment import (daily_input_report, material_flow_report, sales_
 from iog_sim.state import PurchaseOrder
 
 OUTPUT_DIR = Path(__file__).resolve().parent / "reports"
+# 전날 대조용 기록. 매일 이 파일과 함께 커밋해야 다음 담당자가 git pull로 받아 대조한다.
+SNAPSHOT_PATH = Path(__file__).resolve().parent / "daily_snapshot.json"
 
 # ############################################################################
 # ▼▼▼ 입력 ① 매일 갱신 ▼▼▼  (어제 20시 틱 이후 화면 값)
@@ -169,6 +172,85 @@ def check_bom(cfg: SimConfig) -> List[str]:
     return errors
 
 
+def _screen() -> dict:
+    return {"material": {m: list(v) for m, v in MATERIAL_INVENTORY_INOUT.items()},
+            "sales": {p: list(v) for p, v in SALES_INVENTORY_INOUT.items()}}
+
+
+def check_against_snapshot(history: Dict[str, dict], today: dt.date) -> List[str]:
+    """어제 리포트가 예상한 '오늘 화면'과 실제 오늘 화면을 대조한다 (경고만, 실행은 계속).
+
+    판매(Total out)는 수요가 예측과 달라 원래 어긋나므로 보지 않는다. 시스템이 정상이면
+    정확히 맞아야 하는 값만 본다: 자재 Total in(입고), 자재 Total out(소모), 제품 Total in(생산).
+    정산이 빠진 날(09-29), 생산·입고가 덜 반영된 날, 화면을 다른 날 값으로 옮겨 적은 날,
+    TODAY를 안 바꾼 날을 잡는다. 어제 기록이 없거나 어제 입력이 BOM 검산을 통과하지 못했으면
+    대조하지 않는다 (틀린 기록과 비교하면 오늘 정상 입력이 경고로 뜬다).
+    """
+    prev = history.get((today - dt.timedelta(days=1)).isoformat())
+    if not prev or not prev.get("bom_ok", True):
+        return []
+    actual = {
+        "material_in": {m: v[0] for m, v in MATERIAL_INVENTORY_INOUT.items()},
+        "material_out": {m: v[1] for m, v in MATERIAL_INVENTORY_INOUT.items()},
+        "sales_in": {p: v[0] for p, v in SALES_INVENTORY_INOUT.items()},
+    }
+    label = {"material_in": "자재 Total in(입고)", "material_out": "자재 Total out(소모)",
+             "sales_in": "제품 Total in(생산)"}
+    hint = {"material_in": "입고예정분이 안 들어왔거나 MATERIAL_PLANS가 틀림",
+            "material_out": "어제 생산이 계획과 다르게 반영됨",
+            "sales_in": "어제 생산이 계획과 다르게 반영됨 (정산 누락? 자재 부족?)"}
+    warnings = []
+    for key, by_code in prev["expected"].items():
+        for code, exp in by_code.items():
+            got = actual[key].get(code)
+            if exp is None or got is None or got == exp:
+                continue
+            warnings.append(f"[전날 대조] {code} {label[key]}: 화면 {got:,} / 어제 리포트 예상 {exp:,}"
+                            f" (차이 {got - exp:+,}) -> {hint[key]}")
+    if warnings:
+        warnings.append("[전날 대조] TODAY가 오늘인지, 화면 값이 어제 20시 정산 이후 값인지 확인하세요. "
+                        "실제 생산량이 계획과 달랐으면 LOCKED_PRODUCTION_PLAN의 그날 값을 실제 Job 수로 고치세요")
+    return warnings
+
+
+def make_snapshot(res, today: dt.date, bom_ok: bool) -> dict:
+    """오늘 입력 화면 + 오늘 20시 정산 후 예상 누계 (내일 리포트가 대조한다)."""
+    received = {r.material: r.received for r in res.state.material_records if r.date == today}
+    consumed = {r.material: r.consumed for r in res.state.material_records if r.date == today}
+    produced = {r.product: r.produced for r in res.state.daily_records if r.date == today}
+
+    def plus(total, add):
+        return None if total is None else int(total + add)
+
+    return {
+        "bom_ok": bom_ok,
+        "screen": _screen(),
+        "expected": {
+            "material_in": {m: plus(v[0], received.get(m, 0)) for m, v in MATERIAL_INVENTORY_INOUT.items()},
+            "material_out": {m: plus(v[1], consumed.get(m, 0)) for m, v in MATERIAL_INVENTORY_INOUT.items()},
+            "sales_in": {p: plus(v[0], produced.get(p, 0)) for p, v in SALES_INVENTORY_INOUT.items()},
+        },
+    }
+
+
+def _load_snapshots() -> Dict[str, dict]:
+    try:
+        data = json.loads(SNAPSHOT_PATH.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _write_snapshot(history: Dict[str, dict], today: dt.date, snapshot: dict) -> None:
+    """날짜별로 남긴다 (같은 날 다시 돌리면 그날 기록만 바뀐다). 최근 14일만 보관."""
+    history = dict(history)
+    history[today.isoformat()] = snapshot
+    keep = sorted(history)[-14:]
+    SNAPSHOT_PATH.write_text(json.dumps({k: history[k] for k in keep}, ensure_ascii=False, indent=1),
+                             encoding="utf-8")
+    print(f"전날 대조 기록 저장: {SNAPSHOT_PATH.name} (current_state_report.py와 함께 커밋)")
+
+
 def main() -> None:
     cal, cfg = GameCalendar(), SimConfig()
     mat_inventory = {m: v[2] for m, v in MATERIAL_INVENTORY_INOUT.items()}
@@ -191,6 +273,11 @@ def main() -> None:
             "\n[중단] 자재 Total out과 제품 Total in이 BOM으로 맞지 않습니다.\n"
             "  Material·Sales 화면 값을 같은 날(어제 20시 정산 이후) 화면에서 다시 옮겨 적으세요.\n"
             "  화면 값 자체가 어긋난 것을 확인했을 때만 SKIP_BOM_CHECK = True로 두고 실행하세요.")
+    history = _load_snapshots()
+    for w in check_against_snapshot(history, TODAY):
+        print(f"  ! {w}")
+    if (TODAY - dt.timedelta(days=1)).isoformat() not in history:
+        print("  (어제 대조 기록 없음 -> 전날 대조 생략)")
 
     deadline = cal.next_decision_day(TODAY)      # 이번 주 제출 마감 (토)
     plan_week = cal.next_week(deadline)          # 그 제출의 대상 = 차주 일~토
@@ -266,6 +353,7 @@ def main() -> None:
 
     _save({"this_week_rest": _flatten(rest), "next_week_plan": _flatten(upcoming),
            "daily_input": daily, "material_flow": mat_flow, "sales_flow": sales_flow})
+    _write_snapshot(history, TODAY, make_snapshot(res, TODAY, bom_ok=not bom_errors))
 
 
 def _flatten(frame: pd.DataFrame) -> pd.DataFrame:
