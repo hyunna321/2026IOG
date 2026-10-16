@@ -698,3 +698,55 @@ def test_snapshot_check_skips_missing_or_bad_baseline(monkeypatch):
     assert r.check_against_snapshot(history, today) == []                 # 어제 입력이 틀렸던 날
     older = {(today - dt.timedelta(days=3)).isoformat(): _snapshot_history(r, today).popitem()[1]}
     assert r.check_against_snapshot(older, today) == []                   # 어제 기록이 아님
+
+
+def test_iterated_greedy_never_worse_valid_and_deterministic():
+    """IG는 시작 순서(NEH)보다 나빠지지 않고, 올바른 순열이며, 같은 입력이면 같은 순서를 낸다."""
+    from iog_sim.production.sequencing import IteratedGreedy
+    rng = np.random.default_rng(7)
+    p = rng.integers(1, 100, size=(30, 20)).astype(float)
+    neh = NEH().solve(p)
+    ig = IteratedGreedy(iterations=60).solve(p)
+    assert sorted(ig.order) == list(range(30))
+    assert ig.makespan <= neh.makespan
+    assert ig.makespan == makespan(p, ig.order)
+    assert IteratedGreedy(iterations=60).solve(p).order == ig.order
+    tiny = p[:3]
+    assert sorted(IteratedGreedy(iterations=10).solve(tiny).order) == [0, 1, 2]
+
+
+def test_best_insertion_matches_brute_force():
+    from iog_sim.production.sequencing import _best_insertion
+    rng = np.random.default_rng(3)
+    p = rng.integers(1, 50, size=(9, 5)).astype(float)
+    seq, job = [0, 3, 5, 1, 7, 2], 4
+    k, ms = _best_insertion(p, seq, job)
+    brute = [makespan(p, seq[:i] + [job] + seq[i:]) for i in range(len(seq) + 1)]
+    assert ms == min(brute) and brute[k] == ms
+
+
+def test_disk_cached_sequencer_reuses_saved_order():
+    """파일에 남긴 순서를 다음 실행(새 객체)에서 그대로 읽고, 설정 이름이 다르면 다시 계산한다."""
+    from iog_sim.production.sequencing import DiskCached, IteratedGreedy
+
+    class Counting(NEH):
+        calls = 0
+        def solve(self, p):
+            Counting.calls += 1
+            return super().solve(p)
+
+    import tempfile
+    from pathlib import Path
+    p = np.random.default_rng(1).integers(1, 50, size=(12, 6)).astype(float)
+    path = Path(tempfile.mkdtemp()) / "cache.json"
+    first = DiskCached(Counting(), path, label="A").solve(p)
+    again = DiskCached(Counting(), path, label="A").solve(p)
+    assert Counting.calls == 1 and again.order == first.order and again.makespan == first.makespan
+    DiskCached(Counting(), path, label="B").solve(p)
+    assert Counting.calls == 2
+
+
+def test_engine_uses_per_product_sequencer():
+    from iog_sim.examples.demo_run import SEQUENCER
+    from iog_sim.production.sequencing import DiskCached
+    assert isinstance(SEQUENCER, dict) and isinstance(SEQUENCER["P1"], DiskCached)

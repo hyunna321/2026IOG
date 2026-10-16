@@ -52,7 +52,7 @@ class PolicySet:
 
     forecaster: Dict[str, Forecaster]
     lot_sizing: LotSizingPolicy
-    sequencer: Sequencer                      # 실제 투입 순서 (제출용)
+    sequencer: "Sequencer | Dict[str, Sequencer]"   # 실제 투입 순서 (제출용). 제품별 dict 가능
     material: Dict[str, MaterialPolicy]
     discount: DiscountPolicy
     # 완제품 안전재고 규칙. service_level None = 비용 임계비율(판매기회비 vs 재고유지비)
@@ -113,7 +113,10 @@ class Simulator:
     def sequence_for(self, product: str, date: dt.date, n_lots: int) -> SequenceResult:
         key = (product, date, n_lots)
         if key not in self._seq_cache:
-            self._seq_cache[key] = self.pol.sequencer.solve(self.pt(product, date, n_lots))
+            seq = self.pol.sequencer
+            if isinstance(seq, dict):                 # 제품별 sequencer (P1만 IG 등)
+                seq = seq[product]
+            self._seq_cache[key] = seq.solve(self.pt(product, date, n_lots))
         return self._seq_cache[key]
 
     # ------------------------------------------------------------------

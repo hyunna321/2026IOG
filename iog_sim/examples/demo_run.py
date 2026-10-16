@@ -24,7 +24,8 @@ from iog_sim.experiment import cost_decomposition, cost_detail, run_experiment
 from iog_sim.material.policy import DualSourcingPolicy, SsPolicy
 from iog_sim.production.lotsizing import DynamicLotSizing, FixedBatchDays, LotForLot
 from iog_sim.production.safety_stock import EndOfHorizon, SafetyStockRule
-from iog_sim.production.sequencing import BestOf, LTWK, NEH, SPT, Memoized, load_processing_times
+from iog_sim.production.sequencing import (BestOf, DiskCached, IteratedGreedy, LTWK, NEH, SPT,
+                                          Memoized, load_processing_times)
 from iog_sim.sales.discount import MarginalProfitOptimizer, NoDiscount
 
 DATA_DIR = Path(__file__).resolve().parent.parent    # iog_sim/iog_sim
@@ -85,7 +86,17 @@ def processing_times(product: str, date: dt.date, n_lots: int) -> np.ndarray:
 # --- 3. 정책 세트 -----------------------------------------------------------
 
 # 실제 투입 순서. 정책끼리 같은 처리시간표를 반복해 풀므로 결과를 공유한다.
-SEQUENCER = Memoized(BestOf([SPT(), LTWK(), NEH()]))
+# P1은 BestOf 해에서 출발하는 Iterated Greedy(800회, 시드 고정)로 다듬는다. 배치당 수 초~십수 초라
+# 결과를 reports/sequence_cache.json에 남겨 같은 (요일, Job 수)는 다음 실행부터 바로 쓴다.
+# P2는 순서 영향이 작아 BestOf 그대로.
+BASE_SEQUENCER = Memoized(BestOf([SPT(), LTWK(), NEH()]))
+SEQUENCE_CACHE = Path(__file__).resolve().parent / "reports" / "sequence_cache.json"
+SEQUENCE_CACHE.parent.mkdir(parents=True, exist_ok=True)
+SEQUENCER = {
+    "P1": DiskCached(IteratedGreedy(iterations=800, start=BASE_SEQUENCER), SEQUENCE_CACHE,
+                     label="IG800(BestOf)"),
+    "P2": BASE_SEQUENCER,
+}
 
 
 def base_policy(label: str, lot_sizing, discount, z: float = 1.65,
