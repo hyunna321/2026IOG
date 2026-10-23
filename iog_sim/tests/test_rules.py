@@ -750,3 +750,59 @@ def test_engine_uses_per_product_sequencer():
     from iog_sim.examples.demo_run import SEQUENCER
     from iog_sim.production.sequencing import DiskCached
     assert isinstance(SEQUENCER, dict) and isinstance(SEQUENCER["P1"], DiskCached)
+
+
+def test_hard_input_errors_stop_report(monkeypatch):
+    """in-out != level, 이번 주 날짜가 빠진 LOCKED, 과거 TODAY는 '중단' 대상."""
+    import iog_sim.examples.current_state_report as r
+    today = dt.date(2026, 10, 14)
+    week = {dt.date(2026, 10, 11) + dt.timedelta(days=i): {"P1": 0, "P2": 0} for i in range(7)}
+    monkeypatch.setattr(r, "MATERIAL_INVENTORY_INOUT", {"M1": (10, 3, 7), "M2": (10, 0, 10), "M3": (5, 1, 4)})
+    monkeypatch.setattr(r, "SALES_INVENTORY_INOUT", {"P1": (0, 0, 0), "P2": (0, 0, 0)})
+    monkeypatch.setattr(r, "LOCKED_PRODUCTION_PLAN", week)
+    assert r.check_hard(today, {}) == []
+    monkeypatch.setattr(r, "MATERIAL_INVENTORY_INOUT", {"M1": (10, 3, 6), "M2": (10, 0, 10), "M3": (5, 1, 4)})
+    assert any("M1" in e for e in r.check_hard(today, {}))
+    monkeypatch.setattr(r, "MATERIAL_INVENTORY_INOUT", {"M1": (10, 3, 7), "M2": (10, 0, 10), "M3": (5, 1, 4)})
+    last_week = {d - dt.timedelta(days=7): v for d, v in week.items()}
+    monkeypatch.setattr(r, "LOCKED_PRODUCTION_PLAN", last_week)
+    assert any("LOCKED_PRODUCTION_PLAN" in e for e in r.check_hard(today, {}))
+    # 라운드 마지막 주: 종료일 뒤 토요일은 없어도 된다
+    no_sat = {d: v for d, v in week.items() if d.weekday() != 5}
+    monkeypatch.setattr(r, "LOCKED_PRODUCTION_PLAN", no_sat)
+    assert r.check_hard(today, {}, round_end=dt.date(2026, 10, 16)) == []
+    monkeypatch.setattr(r, "LOCKED_PRODUCTION_PLAN", week)
+    assert any("TODAY" in e for e in r.check_hard(today, {"2026-10-15": {}}))
+
+
+def test_soft_checks_missing_order_and_demand_jump(monkeypatch):
+    import iog_sim.examples.current_state_report as r
+    today = dt.date(2026, 10, 14)
+    history = {"2026-10-13": {"orders": [["M1", "normal", 199_521], ["M2", "urgent", 84_623]]}}
+    monkeypatch.setattr(r, "MATERIAL_PLANS", [("M2", "urgent", 84_623, dt.date(2026, 10, 13), None)])
+    missing = r.check_missing_orders(history, today)
+    assert len(missing) == 1 and "M1" in missing[0]
+    monkeypatch.setattr(r, "OBSERVED_DEMAND", {"P2": {dt.date(2026, 10, 13): 83_627,
+                                                     dt.date(2026, 10, 12): 84_131}})
+    series = {"P2": {dt.date(2026, 10, 11): 83_079, dt.date(2026, 10, 12): 84_131,
+                     dt.date(2026, 10, 13): 83_627}}
+    assert r.check_demand_jumps(series, today) == []
+    monkeypatch.setattr(r, "OBSERVED_DEMAND", {"P2": {dt.date(2026, 10, 13): 8_362}})   # 자릿수 오타
+    series["P2"][dt.date(2026, 10, 13)] = 8_362
+    assert len(r.check_demand_jumps(series, today)) == 1
+
+
+def test_confirm_requires_y(monkeypatch):
+    import sys
+    import iog_sim.examples.current_state_report as r
+    monkeypatch.setattr(r, "AUTO_CONFIRM", False)
+    r._confirm([])                                                    # 경고 없으면 그냥 진행
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr("builtins.input", lambda *_: "y")
+    r._confirm(["경고"])
+    monkeypatch.setattr("builtins.input", lambda *_: "")
+    with pytest.raises(SystemExit):
+        r._confirm(["경고"])
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False, raising=False)
+    with pytest.raises(SystemExit):
+        r._confirm(["경고"])

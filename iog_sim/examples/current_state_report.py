@@ -22,7 +22,7 @@ import pandas as pd
 from iog_sim.calendar import GameCalendar
 from iog_sim.config import SimConfig
 from iog_sim.demand.generator import extend_with_forecast
-from iog_sim.examples.demo_run import POLICIES, build
+from iog_sim.examples.demo_run import POLICIES, build, make_demand
 from iog_sim.experiment import (daily_input_report, material_flow_report, sales_flow_report,
                                 weekly_plan_report)
 from iog_sim.state import PurchaseOrder
@@ -121,6 +121,12 @@ OBSERVED_DEMAND: Dict[str, Dict[dt.date, int]] = {
 # 화면 값끼리 BOM 검산이 어긋나면 실행을 멈춘다. 시스템 화면 자체가 어긋난 것을 확인한 날만 True.
 SKIP_BOM_CHECK = False
 
+# '확인 후 진행' 경고는 터미널에서 y를 입력해야 계속된다. 자동 실행(테스트·실험 스크립트)에서만 True.
+AUTO_CONFIRM = False
+
+# 하루 수요가 직전 값보다 이 비율 넘게 변하면 OBSERVED_DEMAND 오타를 의심한다.
+DEMAND_JUMP = 0.15
+
 POLICY = next(p for p in POLICIES if p.label == "DP+한계이익할인")
 
 
@@ -138,15 +144,42 @@ def in_transit_orders(cfg: SimConfig, today: dt.date) -> List[PurchaseOrder]:
     return orders
 
 
-def check_inputs(cfg: SimConfig, today: dt.date) -> List[str]:
-    """화면 값끼리 맞물리는지 검산. 어긋나면 옮겨 적기 실수이거나 시스템 이상이다."""
-    warnings = []
+def _week_of(d: dt.date) -> List[dt.date]:
+    """d가 속한 주(일~토)."""
+    sunday = d - dt.timedelta(days=(d.weekday() + 1) % 7)
+    return [sunday + dt.timedelta(days=i) for i in range(7)]
+
+
+def check_hard(today: dt.date, history: Dict[str, dict],
+               round_end: Optional[dt.date] = None) -> List[str]:
+    """틀리면 반드시 입력 실수인 것들 -> 리포트를 멈춘다 (BOM 검산은 check_bom).
+
+    - in - out != Current level : 시스템 화면에서는 항상 맞으므로 옮겨 적기 실수
+    - 이번 주(일~토, 라운드 종료일까지) 날짜가 LOCKED_PRODUCTION_PLAN에 없음 : 지난주 계획이 남았거나
+      차주 계획으로 이미 바꿈
+    - TODAY가 지난 실행 기록보다 과거 : TODAY 오타
+    """
+    errors = []
     for table, name in ((MATERIAL_INVENTORY_INOUT, "Material"), (SALES_INVENTORY_INOUT, "Sales")):
         for code, (total_in, total_out, level) in table.items():
             if total_in is not None and total_out is not None and total_in - total_out != level:
-                warnings.append(f"{name} {code}: in {total_in:,} - out {total_out:,}"
-                                f" != Current level {level:,}")
+                errors.append(f"{name} {code}: in {total_in:,} - out {total_out:,}"
+                              f" != Current level {level:,} -> 화면 값을 다시 옮겨 적으세요")
+    missing = [d for d in _week_of(today)
+               if (round_end is None or d <= round_end) and d not in LOCKED_PRODUCTION_PLAN]
+    if missing:
+        errors.append(f"LOCKED_PRODUCTION_PLAN에 이번 주 날짜가 없음: "
+                      f"{', '.join(f'{d:%m-%d}' for d in missing)} -> 이번 주(일~토)에 제출된 계획을 넣으세요")
+    if history:
+        latest = max(dt.date.fromisoformat(k) for k in history)
+        if today < latest:
+            errors.append(f"TODAY({today})가 지난 실행 기록({latest})보다 과거 -> TODAY를 확인하세요")
+    return errors
 
+
+def check_inputs(cfg: SimConfig, today: dt.date) -> List[str]:
+    """입고 예정일이 지났는데 미입고로 남은 발주. 실제 입고 지연일 수도 있어 '확인 후 진행'."""
+    warnings = []
     for mat, option, qty, order_date, delivered in MATERIAL_PLANS:
         if delivered is None:
             arrival = order_date + dt.timedelta(
@@ -216,8 +249,51 @@ def check_against_snapshot(history: Dict[str, dict], today: dt.date) -> List[str
     return warnings
 
 
-def make_snapshot(res, today: dt.date, bom_ok: bool) -> dict:
-    """오늘 입력 화면 + 오늘 20시 정산 후 예상 누계 (내일 리포트가 대조한다)."""
+def check_demand_jumps(series: Dict[str, Dict[dt.date, int]], today: dt.date) -> List[str]:
+    """최근 7일 OBSERVED_DEMAND가 직전 수요보다 DEMAND_JUMP 넘게 변했으면 오타 의심 (실제 급변일 수도 있음)."""
+    warnings = []
+    for code, points in OBSERVED_DEMAND.items():
+        full = series.get(code, {})
+        for d, v in sorted(points.items()):
+            if not v or not (today - dt.timedelta(days=7) <= d < today):
+                continue
+            prev = [x for k, x in sorted(full.items()) if k < d and x > 0]
+            if prev and abs(v / prev[-1] - 1) > DEMAND_JUMP:
+                warnings.append(f"OBSERVED_DEMAND {code} {d:%m-%d} = {v:,} (직전 {prev[-1]:,}, "
+                                f"{v / prev[-1] - 1:+.0%}) -> 오타가 아닌지 Demand 화면과 대조하세요")
+    return warnings
+
+
+def check_missing_orders(history: Dict[str, dict], today: dt.date) -> List[str]:
+    """어제 리포트가 권고한 발주가 MATERIAL_PLANS에 없으면 경고 (기록을 빼먹으면 같은 물량을 또 발주한다)."""
+    yesterday = today - dt.timedelta(days=1)
+    prev = history.get(yesterday.isoformat())
+    if not prev:
+        return []
+    recorded = {(m, o) for m, o, _, d, _ in MATERIAL_PLANS if d == yesterday}
+    return [f"어제({yesterday:%m-%d}) 권고 발주 {m} {o} {q:,}가 MATERIAL_PLANS에 없음 -> "
+            f"실제로 발주했으면 행을 추가, 일부러 안 했으면 y로 진행"
+            for m, o, q in prev.get("orders", []) if (m, o) not in recorded]
+
+
+def _confirm(lines: List[str]) -> None:
+    """'확인 후 진행' 경고: 터미널에서 y를 입력해야 계속한다. 그 외 입력·자동 실행은 중단."""
+    if not lines:
+        return
+    _print_warnings(lines, f"확인 필요 {len(lines)}건 - 읽고 y를 입력해야 계속합니다")
+    if AUTO_CONFIRM:
+        print("  (AUTO_CONFIRM = True: 자동으로 진행)")
+        return
+    import sys
+    if not sys.stdin or not sys.stdin.isatty():
+        raise SystemExit("[중단] 확인이 필요한 경고가 있습니다. 터미널에서 직접 실행해 y로 확인하세요.")
+    answer = input("  위 경고를 모두 확인했고 그대로 진행하려면 y 입력: ").strip().lower()
+    if answer != "y":
+        raise SystemExit("[중단] 경고를 확인한 뒤 입력값을 고치고 다시 실행하세요.")
+
+
+def make_snapshot(res, today: dt.date, bom_ok: bool, acknowledged: Optional[List[str]] = None) -> dict:
+    """오늘 입력 화면 + 오늘 20시 정산 후 예상 누계 + 오늘 권고 발주 (내일 리포트가 대조한다)."""
     received = {r.material: r.received for r in res.state.material_records if r.date == today}
     consumed = {r.material: r.consumed for r in res.state.material_records if r.date == today}
     produced = {r.product: r.produced for r in res.state.daily_records if r.date == today}
@@ -227,6 +303,9 @@ def make_snapshot(res, today: dt.date, bom_ok: bool) -> dict:
 
     return {
         "bom_ok": bom_ok,
+        "acknowledged": list(acknowledged or []),
+        "orders": [[o.material, o.option, int(o.qty)] for o in res.state.open_orders
+                   if o.order_date == today],
         "screen": _screen(),
         "expected": {
             "material_in": {m: plus(v[0], received.get(m, 0)) for m, v in MATERIAL_INVENTORY_INOUT.items()},
@@ -289,11 +368,23 @@ def main() -> None:
             "  Material·Sales 화면 값을 같은 날(어제 20시 정산 이후) 화면에서 다시 옮겨 적으세요.\n"
             "  화면 값 자체가 어긋난 것을 확인했을 때만 SKIP_BOM_CHECK = True로 두고 실행하세요.")
     history = _load_snapshots()
-    warnings = (check_inputs(cfg, TODAY) + bom_errors
-                + check_against_snapshot(history, TODAY))
-    _print_warnings(warnings, "입력 경고 - 아래를 확인하기 전에는 시스템에 입력하지 마세요")
-    if (TODAY - dt.timedelta(days=1)).isoformat() not in history:
-        print("  (어제 대조 기록 없음 -> 전날 대조 생략)")
+    hard = check_hard(TODAY, history, cal.round_end_for(TODAY))
+    if hard:
+        _print_warnings(hard, "[중단] 입력 오류 - 고치기 전에는 실행할 수 없습니다")
+        raise SystemExit("\n[중단] 위 입력 오류를 고친 뒤 다시 실행하세요.")
+    yesterday = history.get((TODAY - dt.timedelta(days=1)).isoformat())
+    if yesterday is None:
+        print("  (어제 대조 기록 없음 -> 전날 대조·발주 기록 확인 생략)")
+    elif yesterday.get("acknowledged"):
+        print("  (참고) 어제 담당자가 확인 후 진행한 경고:")
+        for w in yesterday["acknowledged"]:
+            print(f"    - {w}")
+    full_demand = make_demand().series
+    for code, points in OBSERVED_DEMAND.items():
+        full_demand[code].update(points)
+    warnings = (bom_errors + check_inputs(cfg, TODAY) + check_against_snapshot(history, TODAY)
+                + check_missing_orders(history, TODAY) + check_demand_jumps(full_demand, TODAY))
+    _confirm(warnings)
 
     deadline = cal.next_decision_day(TODAY)      # 이번 주 제출 마감 (토)
     plan_week = cal.next_week(deadline)          # 그 제출의 대상 = 차주 일~토
@@ -369,10 +460,11 @@ def main() -> None:
 
     _save({"this_week_rest": _flatten(rest), "next_week_plan": _flatten(upcoming),
            "daily_input": daily, "material_flow": mat_flow, "sales_flow": sales_flow})
-    _write_snapshot(history, TODAY, make_snapshot(res, TODAY, bom_ok=not bom_errors))
+    _write_snapshot(history, TODAY, make_snapshot(res, TODAY, bom_ok=not bom_errors,
+                                                  acknowledged=warnings))
     if warnings:
         # 출력이 길어 맨 위 경고가 화면 밖으로 밀려나므로 끝에서 한 번 더 보여 준다
-        _print_warnings(warnings, f"다시 알림: 입력 경고 {len(warnings)}건 (맨 위 [입력 확인] 참고)")
+        _print_warnings(warnings, f"다시 알림: 확인 후 진행한 경고 {len(warnings)}건 (단톡방에 공유)")
 
 
 def _flatten(frame: pd.DataFrame) -> pd.DataFrame:
