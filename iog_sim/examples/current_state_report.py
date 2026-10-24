@@ -4,7 +4,7 @@
 
 입력 채널은 결정 시점이 다르므로 표도 나눈다.
 
-  [주간] Demand / Production : 차주 7일치를 토요일 자정에 한 번에 제출. 이번 주 계획은 이미 마감.
+  [주간] Demand / Production : 차주 7일치를 토요일 19:30까지 제출(덮어쓰기 가능). 이번 주 계획은 이미 마감.
   [일일] Material / Sales    : 매일 20시. Material은 당일 발주량, Sales는 익일 할인율.
 
 입력 값은 모두 **어제 20시 틱 이후** 화면 값이다. 시뮬레이션은 TODAY 하루(오늘 20시 틱)부터 돈다.
@@ -430,7 +430,7 @@ def main() -> None:
     upcoming_days = [d for d in plan_week if d <= sim_end]
     upcoming = weekly_plan_report(res, upcoming_days, sequence_fn=seq_fn)
     if upcoming_days:
-        print(f"[차주 제출용] Demand + Production 탭 / 마감 {deadline:%Y-%m-%d}(토) 자정"
+        print(f"[차주 제출용] Demand + Production 탭 / 마감 {deadline:%Y-%m-%d}(토) 19:30"
               f" / 대상 {upcoming_days[0]:%m-%d}~{upcoming_days[-1]:%m-%d}")
         print(upcoming.drop(columns=seq_cols).to_string(index=False))
         print()
