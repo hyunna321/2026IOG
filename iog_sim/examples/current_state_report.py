@@ -35,14 +35,14 @@ SNAPSHOT_PATH = Path(__file__).resolve().parent / "daily_snapshot.json"
 # ▼▼▼ 입력 ① 매일 갱신 ▼▼▼  (어제 20시 틱 이후 화면 값)
 # ############################################################################
 
-TODAY = dt.date(2026, 11, 1)
+TODAY = dt.date(2026, 11, 3)
 
 # [Material 화면] Material inventory in/out summary
 #   자재: (Total in, Total out, Current level).  Current level이 시뮬레이션 시작 재고가 된다.
 MATERIAL_INVENTORY_INOUT = {
-    "M1": (300_000, 0, 300_000),
-    "M2": (3_000_000, 0, 3_000_000),
-    "M3": (500_000, 0, 500_000),
+    "M1": (1_000_000, 225_000, 775_000),
+    "M2": (3_000_000, 766_000, 2_234_000),
+    "M3": (500_000, 158_000, 342_000),
 }
 
 # [Material 화면] Material plans
@@ -51,19 +51,19 @@ MATERIAL_INVENTORY_INOUT = {
 #   도착 예정일은 발주일 + 리드타임(config)으로 계산한다.
 MATERIAL_PLANS = [
     ("M2", "normal", 2_000_000, dt.date(2026, 10, 28), None),
-    ("M1", "normal", 700_000, dt.date(2026, 10, 30), None),
+    ("M3", "normal", 496_667, dt.date(2026, 11, 1), None),
 ]
 
 # [Sales 화면] Sales inventory in/out summary
 #   제품: (Total in, Total out, Current level).  Current level이 시뮬레이션 시작 재고가 된다.
 #   모르는 칸은 None (검산만 건너뛴다).
 SALES_INVENTORY_INOUT = {
-    "P1": (0, 0, 0),
-    "P2": (0, 0, 0),
+    "P1": (225_000, 225_000, 0),
+    "P2": (158_000, 156_016, 1_984),
 }
 
 # [Ledger 화면] Balance. expected_balance 열의 기준선일 뿐 발주·할인·계획에는 영향이 없다.
-CURRENT_BALANCE = 0
+CURRENT_BALANCE = 17_685_720
 
 # ############################################################################
 # ▼▼▼ 입력 ② 토요일마다 갱신 ▼▼▼  (제출해서 확정된 이번 주 Production 계획)
@@ -89,12 +89,16 @@ OBSERVED_DEMAND: Dict[str, Dict[dt.date, int]] = {
         dt.date(2026, 10, 29): 230_500,
         dt.date(2026, 10, 30): 224_000,
         dt.date(2026, 10, 31): 0,
+        dt.date(2026, 11, 1): 0,
+        dt.date(2026, 11, 2): 229_000,
     },
     "P2": {
         dt.date(2026, 10, 28): 80_793,
         dt.date(2026, 10, 29): 79_843,
         dt.date(2026, 10, 30): 78_426,
         dt.date(2026, 10, 31): 77_316,
+        dt.date(2026, 11, 1): 77_888,
+        dt.date(2026, 11, 2): 78_128,
     },
 }
 # ############################################################################
