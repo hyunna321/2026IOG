@@ -137,7 +137,7 @@ class Simulator:
         backfill_current_week: 라운드 중간에 시작해 아직 계획이 없을 때, start-1을 예측 원점으로
             start~이번 주 토요일까지만 계획을 깐다. 다음 주 날짜는 건드리지 않는다.
         locked_production_plan: {날짜: {제품: Lot수}}. 이미 제출된 계획. 그날 계획을 통째로 대체한다.
-        initial_open_orders: 이미 발주해 아직 도착하지 않은 주문. 비용은 이미 지출된 것으로 본다.
+        initial_open_orders: 이미 발주해 아직 도착하지 않은 주문. 구매비·주문비는 입고일에 반영한다.
         """
         self.demand.reset(seed)
         self._round_end = self.cal.round_end_for(start)
@@ -358,9 +358,7 @@ class Simulator:
             if not orders:
                 continue
             state.open_orders.extend(orders)
-            result[mat] = dict(
-                order_cost=spec.order_cost * len(orders),
-                purchase_cost=sum(spec.option(o.option).unit_cost * o.qty for o in orders))
+            # 발주일에는 지출하지 않는다. 구매비·주문비는 입고일의 _close_day에서 기록한다.
         return result
 
     def _trim_for_round_end(self, state: WorldState, mat: str, orders: List[PurchaseOrder],
@@ -419,15 +417,17 @@ class Simulator:
             ))
         for mat, spec in self.cfg.materials.items():
             inv = state.mat_inventory.get(mat, 0)
-            oc = order_costs.get(mat, {})
+            received_orders = [o for o in state.open_orders
+                               if o.material == mat and o.received and o.arrival_date == d]
             state.material_records.append(MaterialRecord(
                 date=d,
                 material=mat,
                 received=recv.get(mat, 0),
                 consumed=consumed.get(mat, 0),
                 inventory_end=inv,
-                order_cost=oc.get("order_cost", 0),
-                purchase_cost=oc.get("purchase_cost", 0),
+                order_cost=spec.order_cost * len(received_orders),
+                purchase_cost=sum(spec.option(o.option).unit_cost * o.qty
+                                  for o in received_orders),
                 holding_cost=inv * spec.holding_cost,
             ))
 
