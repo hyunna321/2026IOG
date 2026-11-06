@@ -35,14 +35,14 @@ SNAPSHOT_PATH = Path(__file__).resolve().parent / "daily_snapshot.json"
 # ▼▼▼ 입력 ① 매일 갱신 ▼▼▼  (어제 20시 틱 이후 화면 값)
 # ############################################################################
 
-TODAY = dt.date(2026, 11, 5)
+TODAY = dt.date(2026, 11, 6)
 
 # [Material 화면] Material inventory in/out summary
 #   자재: (Total in, Total out, Current level).  Current level이 시뮬레이션 시작 재고가 된다.
 MATERIAL_INVENTORY_INOUT = {
-    "M1": (1_000_000, 675_000, 325_000),
-    "M2": (3_000_000, 1_982_000, 1_018_000),
-    "M3": (500_000, 316_000, 184_000),
+    "M1": (1_000_000, 900_000, 100_000),
+    "M2": (5_000_000, 2_590_000, 2_410_000),
+    "M3": (500_000, 395_000, 105_000),
 }
 
 # [Material 화면] Material plans
@@ -53,7 +53,6 @@ MATERIAL_PLANS = [
     ("M1", "normal", 859_342, dt.date(2026, 11, 3), None),
     ("M2", "normal", 2_226_500, dt.date(2026, 11, 3), None),
     ("M3", "normal", 496_667, dt.date(2026, 11, 1), None),
-    ("M2", "normal", 2_000_000, dt.date(2026, 10, 28), None),
 ]
 
 
@@ -61,12 +60,12 @@ MATERIAL_PLANS = [
 #   제품: (Total in, Total out, Current level).  Current level이 시뮬레이션 시작 재고가 된다.
 #   모르는 칸은 None (검산만 건너뛴다).
 SALES_INVENTORY_INOUT = {
-    "P1": (675_000, 662_000, 13_000),
-    "P2": (316_000, 310_290, 5_710),
+    "P1": (900_000, 866_000, 34_000),
+    "P2": (395_000, 390_985, 4_015),
 }
 
 # [Ledger 화면] Balance. expected_balance 열의 기준선일 뿐 발주·할인·계획에는 영향이 없다.
-CURRENT_BALANCE = 98_256_270
+CURRENT_BALANCE = 86_339_070
 
 # ############################################################################
 # ▼▼▼ 입력 ② 토요일마다 갱신 ▼▼▼  (제출해서 확정된 이번 주 Production 계획)
@@ -97,6 +96,7 @@ OBSERVED_DEMAND: Dict[str, Dict[dt.date, int]] = {
         dt.date(2026, 11, 3): 219_500,
         dt.date(2026, 11, 4): 217_500,
         dt.date(2026, 11, 5): 204_000,
+        dt.date(2026, 11, 6): 188_800,
     },
     "P2": {
         dt.date(2026, 10, 28): 80_793,
@@ -108,6 +108,7 @@ OBSERVED_DEMAND: Dict[str, Dict[dt.date, int]] = {
         dt.date(2026, 11, 3): 76_449,
         dt.date(2026, 11, 4): 77_825,
         dt.date(2026, 11, 5): 80_695,
+        dt.date(2026, 11, 6): 75_375,
     },
 }
 # ############################################################################
