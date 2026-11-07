@@ -446,12 +446,9 @@ def main() -> None:
     print(sales_flow.to_string(index=False))
     print()
 
-    print("[차주 Job 시퀀스] Production 탭 'Job sequence' 칸에 입력")
-    for _, row in upcoming.iterrows():
-        for code in ("P1", "P2"):
-            seq = row[f"{code}_sequence"]
-            if seq:
-                print(f"  {row['date']} {code} ({len(seq)} Job): {','.join(map(str, seq))}")
+    print("[차주 Job 시퀀스] Production 탭 'Job sequence' 칸에 입력 (시퀀스 줄만 통째로 복사)")
+    for line in sequence_lines(upcoming):
+        print(line)
 
     _save({"this_week_rest": _flatten(rest), "next_week_plan": _flatten(upcoming),
            "daily_input": daily, "material_flow": mat_flow, "sales_flow": sales_flow})
@@ -460,6 +457,18 @@ def main() -> None:
     if warnings:
         # 출력이 길어 맨 위 경고가 화면 밖으로 밀려나므로 끝에서 한 번 더 보여 준다
         _print_warnings(warnings, f"다시 알림: 확인 후 진행한 경고 {len(warnings)}건 (단톡방에 공유)")
+
+
+def sequence_lines(upcoming: pd.DataFrame) -> List[str]:
+    """날짜·제품 줄과 시퀀스 줄을 나누고 항목 사이를 비운다. 시퀀스 줄은 들여쓰기 없이 쉼표만 써서
+    줄 전체를 복사하면 그대로 붙여 넣을 수 있다 (생산 0인 날은 생략)."""
+    lines = []
+    for _, row in upcoming.iterrows():
+        for code in ("P1", "P2"):
+            seq = row[f"{code}_sequence"]
+            if seq:
+                lines += [f"{row['date']} {code} ({len(seq)} Job)", ",".join(map(str, seq)), ""]
+    return lines
 
 
 def _flatten(frame: pd.DataFrame) -> pd.DataFrame:

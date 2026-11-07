@@ -612,6 +612,21 @@ def test_urgent_m2_ignores_unfixable_tomorrow_and_orders_one_day_early():
     assert urgent_qty(500_000, {4: 600_000}) == 0                                    # 아직 이름
 
 
+def test_sequence_lines_put_each_sequence_alone_on_its_own_line():
+    """터미널에서 시퀀스만 한 줄 통째로 복사할 수 있어야 한다: 머리줄과 분리, 들여쓰기·공백 없음, 항목 사이 빈 줄."""
+    import pandas as pd
+    from iog_sim.examples.current_state_report import sequence_lines
+    upcoming = pd.DataFrame([
+        {"date": "2026-11-08", "P1_sequence": [], "P2_sequence": [3, 1, 2]},
+        {"date": "2026-11-09", "P1_sequence": [5, 4], "P2_sequence": [2, 1]},
+    ])
+    assert sequence_lines(upcoming) == [
+        "2026-11-08 P2 (3 Job)", "3,1,2", "",
+        "2026-11-09 P1 (2 Job)", "5,4", "",
+        "2026-11-09 P2 (2 Job)", "2,1", "",
+    ]
+
+
 def test_weekly_plan_report_keeps_columns_when_no_days_left():
     """라운드 마지막 주(일~금)에는 차주 제출 대상이 없다. 빈 표라도 열이 있어야 CSV 저장이 된다."""
     from types import SimpleNamespace
