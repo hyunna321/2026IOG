@@ -35,14 +35,14 @@ SNAPSHOT_PATH = Path(__file__).resolve().parent / "daily_snapshot.json"
 # ▼▼▼ 입력 ① 매일 갱신 ▼▼▼  (어제 20시 틱 이후 화면 값)
 # ############################################################################
 
-TODAY = dt.date(2026, 11, 8)
+TODAY = dt.date(2026, 11, 9)
 
 # [Material 화면] Material inventory in/out summary
 #   자재: (Total in, Total out, Current level).  Current level이 시뮬레이션 시작 재고가 된다.
 MATERIAL_INVENTORY_INOUT = {
     "M1": (1_859_342, 1_145_000, 714_342),
-    "M2": (5_000_000, 3_400_000, 1_600_000),
-    "M3": (996_667, 555_000, 441_667),
+    "M2": (5_000_000, 3_528_000, 1_472_000),
+    "M3": (996_667, 619_000, 377_667),
 }
 
 # [Material 화면] Material plans
@@ -51,6 +51,7 @@ MATERIAL_INVENTORY_INOUT = {
 #   도착 예정일은 발주일 + 리드타임(config)으로 계산한다.
 MATERIAL_PLANS = [
     ("M2", "normal", 2_226_500, dt.date(2026, 11, 3), None),
+    ("M3", "normal", 515_188, dt.date(2026, 11, 8), None),
 ]
 
 
@@ -59,11 +60,11 @@ MATERIAL_PLANS = [
 #   모르는 칸은 None (검산만 건너뛴다).
 SALES_INVENTORY_INOUT = {
     "P1": (1_145_000, 1_054_800, 90_200),
-    "P2": (555_000, 542_309, 12_691),
+    "P2": (619_000, 618_073, 927),
 }
 
 # [Ledger 화면] Balance. expected_balance 열의 기준선일 뿐 발주·할인·계획에는 영향이 없다.
-CURRENT_BALANCE = 70_041_578
+CURRENT_BALANCE = 73_883_492
 
 # ############################################################################
 # ▼▼▼ 입력 ② 토요일마다 갱신 ▼▼▼  (제출해서 확정된 이번 주 Production 계획)
@@ -96,6 +97,7 @@ OBSERVED_DEMAND: Dict[str, Dict[dt.date, int]] = {
         dt.date(2026, 11, 5): 201_500,
         dt.date(2026, 11, 6): 193_500,
         dt.date(2026, 11, 7): 0,
+        dt.date(2026, 11, 8): 0,
     },
     "P2": {
         dt.date(2026, 10, 28): 80_793,
@@ -109,6 +111,7 @@ OBSERVED_DEMAND: Dict[str, Dict[dt.date, int]] = {
         dt.date(2026, 11, 5): 80_695,
         dt.date(2026, 11, 6): 75_375,
         dt.date(2026, 11, 7): 75_949,
+        dt.date(2026, 11, 8): 75_764,
     },
 }
 # ############################################################################
