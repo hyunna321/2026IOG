@@ -22,7 +22,7 @@ from iog_sim.demand.generator import HistoricalReplay, load_historical_replay
 from iog_sim.engine import PolicySet, Simulator
 from iog_sim.experiment import cost_decomposition, cost_detail, run_experiment
 from iog_sim.material.policy import DualSourcingPolicy, SsPolicy
-from iog_sim.production.lotsizing import DynamicLotSizing, FixedBatchDays, LotForLot
+from iog_sim.production.lotsizing import DynamicLotSizing, FixedBatchDays
 from iog_sim.production.safety_stock import EndOfHorizon, SafetyStockRule
 from iog_sim.production.sequencing import (BestOf, DiskCached, IteratedGreedy, LTWK, NEH, SPT,
                                           Memoized, load_processing_times)
@@ -97,6 +97,10 @@ SEQUENCER = {
                      label="IG800(BestOf)"),
     "P2": BASE_SEQUENCER,
 }
+# Lot sizing DP용 makespan. 실제 순서와 같은 BestOf로 구해야 잔업 경계 판단이 맞다
+# (LTWK는 P1 makespan을 약 15% 크게 본다). 배치 크기 하나에 0.1~0.6초라 같은 캐시 파일에 남긴다.
+# P1 실제 순서(IG)는 BestOf보다 makespan이 평균 0.9% 더 짧다 -- DP는 이만큼 보수적으로 본다.
+PLANNING_SEQUENCER = DiskCached(BASE_SEQUENCER, SEQUENCE_CACHE, label="BestOf")
 
 
 def base_policy(label: str, lot_sizing, discount, z: float = 1.65,
@@ -106,7 +110,7 @@ def base_policy(label: str, lot_sizing, discount, z: float = 1.65,
                     "P2": SimpleExponentialSmoothingForecaster()},
         lot_sizing=lot_sizing,
         sequencer=SEQUENCER,
-        planning_sequencer=LTWK(),       # DP가 수백 번 호출하므로 빠른 규칙 유지
+        planning_sequencer=PLANNING_SEQUENCER,
         material={
             "M1": SsPolicy(z=z),
             "M2": DualSourcingPolicy(z_normal=z),
@@ -119,8 +123,8 @@ def base_policy(label: str, lot_sizing, discount, z: float = 1.65,
 
 
 POLICIES = [
-    base_policy("L4L+할인없음", LotForLot(), NoDiscount()),
-    base_policy("2일배치+할인없음", FixedBatchDays(2), NoDiscount()),
+    # 고정 n일 배치 (n=1 = L4L). DP가 이들보다 나은지로 작업준비비 vs 잔업·재고비 균형을 확인한다.
+    *(base_policy(f"{n}일배치+할인없음", FixedBatchDays(n), NoDiscount()) for n in (1, 2, 3, 5)),
     base_policy("DP+할인없음", DynamicLotSizing(), NoDiscount()),
     base_policy("DP+한계이익할인", DynamicLotSizing(), MarginalProfitOptimizer()),
 ]
@@ -142,4 +146,4 @@ if __name__ == "__main__":
     print()
     print(cost_detail(result).to_string())
     print()
-    print(result.compare(baseline="L4L+할인없음").to_string(index=False))
+    print(result.compare(baseline="1일배치+할인없음").to_string(index=False))

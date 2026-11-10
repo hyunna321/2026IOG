@@ -281,7 +281,7 @@ def _same_day_sim(same_day: bool):
     from iog_sim.demand.generator import HistoricalReplay
     from iog_sim.engine import PolicySet, Simulator
     from iog_sim.material.policy import SsPolicy
-    from iog_sim.production.lotsizing import LotForLot
+    from iog_sim.production.lotsizing import FixedBatchDays
     from iog_sim.production.sequencing import LTWK
     from iog_sim.sales.discount import NoDiscount
 
@@ -296,7 +296,7 @@ def _same_day_sim(same_day: bool):
     table = np.random.default_rng(0).uniform(30, 62, size=(500, 20))
     pol = PolicySet(
         forecaster={"P1": NaiveForecaster(), "P2": NaiveForecaster()},
-        lot_sizing=LotForLot(),
+        lot_sizing=FixedBatchDays(1),
         sequencer=LTWK(),
         planning_sequencer=LTWK(),
         material={m: SsPolicy() for m in ("M1", "M2", "M3")},
@@ -340,14 +340,14 @@ def test_l4l_consumes_opening_inventory_on_unproducible_days():
     """
     import datetime as dt
 
-    from iog_sim.production.lotsizing import LotForLot
+    from iog_sim.production.lotsizing import FixedBatchDays
 
     sun = dt.date(2026, 9, 20)
     days = [sun + dt.timedelta(days=i) for i in range(4)]     # 일·월·화·수
     demand = {d: 10_000 for d in days}
     prod_days = [d for d in days if d.weekday() < 5]          # 월·화·수
 
-    plan = LotForLot().plan(
+    plan = FixedBatchDays(1).plan(
         product=P2, demand_by_date=demand, production_days=prod_days,
         opening_inventory=20_000,                              # 일·월 이틀치만 커버
         makespan_oracle=lambda day, lots: 1000.0,
@@ -375,7 +375,7 @@ def test_replanning_a_week_clears_previous_assignment():
     from iog_sim.demand.generator import HistoricalReplay
     from iog_sim.engine import PolicySet, Simulator
     from iog_sim.material.policy import SsPolicy
-    from iog_sim.production.lotsizing import LotForLot
+    from iog_sim.production.lotsizing import FixedBatchDays
     from iog_sim.production.sequencing import LTWK
     from iog_sim.sales.discount import NoDiscount
     from iog_sim.state import ProductionOrder, WorldState
@@ -388,7 +388,7 @@ def test_replanning_a_week_clears_previous_assignment():
     hist = {d: 10_000 for d in cal.date_range(decision - dt.timedelta(days=60), decision)}
     pol = PolicySet(
         forecaster={"P1": NaiveForecaster(), "P2": NaiveForecaster()},
-        lot_sizing=LotForLot(), sequencer=LTWK(), planning_sequencer=LTWK(),
+        lot_sizing=FixedBatchDays(1), sequencer=LTWK(), planning_sequencer=LTWK(),
         material={m: SsPolicy() for m in ("M1", "M2", "M3")},
         discount=NoDiscount(), label="test")
     table = np.random.default_rng(0).uniform(30, 62, size=(500, 20))
@@ -539,7 +539,7 @@ def test_critical_ratio_reflects_stockout_vs_holding():
 def test_cumulative_safety_stock_holds_buffer_every_day():
     """누적 규칙은 주중 매일 '누적 생산 >= 누적 예측 + ss_h'를 만족해야 한다."""
     from iog_sim.demand.forecaster import ForecastResult
-    from iog_sim.production.lotsizing import LotForLot
+    from iog_sim.production.lotsizing import FixedBatchDays
     from iog_sim.production.safety_stock import CumulativeModelSigma, EndOfHorizon
 
     days = [dt.date(2026, 10, 12) + dt.timedelta(days=i) for i in range(5)]   # 월~금
@@ -548,7 +548,7 @@ def test_cumulative_safety_stock_holds_buffer_every_day():
     for rule, mid_week_buffer in ((CumulativeModelSigma(0.95), True), (EndOfHorizon(0.95), False)):
         ss = rule.cumulative_targets(fc, [], None, 0.95)
         inc = np.diff(np.concatenate([[0], ss]))
-        plan = LotForLot().plan(P1, {d: 100_000 + int(i) for d, i in zip(days, inc)}, days, 0,
+        plan = FixedBatchDays(1).plan(P1, {d: 100_000 + int(i) for d, i in zip(days, inc)}, days, 0,
                                 lambda day, lots: 1000.0)
         cum_prod = np.cumsum([plan.lots_by_date.get(d, 0) * 1000 for d in days])
         cum_dem = np.cumsum([100_000] * 5)
@@ -821,3 +821,76 @@ def test_confirm_requires_y(monkeypatch):
     monkeypatch.setattr(sys.stdin, "isatty", lambda: False, raising=False)
     with pytest.raises(SystemExit):
         r._confirm(["경고"])
+
+
+# --- Lot sizing: 장부와 같은 비용 규칙 ---------------------------------------
+
+def test_evaluate_charges_holding_on_every_calendar_day():
+    """금요일에 만든 월요일분은 금·토·일 3일 밤 재고비가 붙는다 (주말도 장부에 잡힌다)."""
+    from iog_sim.production.lotsizing import FixedBatchDays
+
+    fri, mon = dt.date(2026, 10, 16), dt.date(2026, 10, 19)
+    plan = FixedBatchDays(1).plan(P1, {mon: 10_000}, [fri], 0, lambda day, lots: 0.0)
+    assert plan.lots_by_date == {fri: 10}
+    assert plan.detail["fg_holding_cost"] == 10_000 * P1.holding_cost * 3
+
+
+def test_dp_nets_rounding_leftover_into_next_batch():
+    """Lot 올림 잔량(500개)은 다음 배치가 덜 만든다: 10,500 x 3일 = 11 + 10 + 11 Lot."""
+    import dataclasses
+    from iog_sim.production.lotsizing import DynamicLotSizing
+
+    spec = dataclasses.replace(P2, setup_cost=0)            # 매일 생산이 최적이 되게
+    days = [dt.date(2026, 10, 12) + dt.timedelta(days=i) for i in range(3)]
+    plan = DynamicLotSizing().plan(spec, {d: 10_500 for d in days}, days, 0,
+                                   lambda day, lots: 0.0)
+    assert [plan.lots_by_date[d] for d in days] == [11, 10, 11]
+
+
+def test_dp_is_never_worse_than_fixed_batches():
+    """DP 목적함수가 평가기와 같으므로, 같은 해 공간인 고정 n일 배치보다 비싸면 안 된다."""
+    from iog_sim.production.lotsizing import DynamicLotSizing, FixedBatchDays
+
+    rng = np.random.default_rng(3)
+    days = [dt.date(2026, 10, 11) + dt.timedelta(days=i) for i in range(10)]
+    oracle = lambda day, lots: 500.0 + 80.0 * lots          # 약 81 Lot부터 잔업
+    for _ in range(20):
+        demand = {d: int(rng.integers(20_000, 90_000)) for d in days}
+        opening = int(rng.integers(0, 50_000))
+        dp = DynamicLotSizing().plan(P2, demand, days, opening, oracle)
+        assert dp.detail["expected_shortage_units"] == 0
+        for n in (1, 2, 3, 5):
+            fixed = FixedBatchDays(n).plan(P2, demand, days, opening, oracle)
+            assert dp.expected_cost <= fixed.expected_cost
+
+
+def test_dp_counts_stockout_beyond_daily_cap():
+    from iog_sim.production.lotsizing import DynamicLotSizing
+
+    d = dt.date(2026, 10, 12)
+    plan = DynamicLotSizing().plan(P2, {d: 600_000}, [d], 0, lambda day, lots: 0.0)
+    assert plan.lots_by_date == {d: 500}
+    assert plan.detail["expected_shortage_units"] == 100_000
+
+
+def test_planning_makespan_defaults_to_actual_sequencer():
+    """planning_sequencer를 비우면 DP가 실제 투입 순서와 같은 makespan을 본다."""
+    sim = _flat_sim(dt.date(2026, 10, 3), dt.date(2026, 10, 10))
+    sim.pol.planning_sequencer = None
+    sim.pol.sequencer = NEH()
+    d = dt.date(2026, 10, 5)
+    assert sim.makespan_for("P1", d, 40) == sim.sequence_for("P1", d, 40).makespan
+
+
+def test_lookahead_never_commits_next_week():
+    """rolling horizon은 다음 주를 내다보기만 하고 확정은 이번 주 날짜에만 한다."""
+    from iog_sim.state import WorldState
+
+    sim = _flat_sim(dt.date(2026, 10, 3), dt.date(2026, 10, 10))
+    decision = dt.date(2026, 10, 10)
+    week = sim.cal.next_week(decision)
+    state = WorldState(fg_inventory={"P1": 0, "P2": 0}, mat_inventory={})
+    state.forecast_cache = {"P1": {}, "P2": {}}
+    sim._plan_week(state, decision, week)
+    planned = [day for day, by in state.production_plan.items() if by]
+    assert planned and all(day in week for day in planned)

@@ -12,7 +12,6 @@ from .sequencing import (  # noqa: F401
 from .lotsizing import (  # noqa: F401
     LotPlan,
     LotSizingPolicy,
-    LotForLot,
     FixedBatchDays,
     DynamicLotSizing,
     lots_for,

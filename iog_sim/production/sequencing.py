@@ -5,8 +5,8 @@
 계단식(floor(makespan/100))으로 연동되므로 100시간 경계를 넘기느냐가 실제 이득을 가른다.
 
 규칙별 성격
-  - SPT / LTWK : 정렬 한 번으로 끝나는 기준선. Lot sizing DP가 수백 번 호출하는
-    planning_sequencer 자리에 쓴다. SPT는 시스템 Auto와 같은 로직이다.
+  - SPT / LTWK : 정렬 한 번으로 끝나는 기준선 (BestOf 후보). SPT는 시스템 Auto와 같은 로직이다.
+    LTWK는 P1 makespan을 BestOf보다 약 15% 크게 보므로 Lot sizing용으로 쓰지 않는다.
   - NEH        : flow shop 삽입 휴리스틱(Taillard 가속). 300 Job에서 약 0.5초,
     Makespan은 SPT보다 약 10% 짧다. 실제 투입 순서(sequencer)에 쓴다.
   - BestOf     : 여러 규칙을 모두 돌려 Makespan 최소 해를 채택.

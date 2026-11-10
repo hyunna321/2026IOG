@@ -18,8 +18,7 @@ cd <repo>                                        # iog_sim 패키지를 담고 �
 python -m pytest iog_sim/tests -q                # 규칙 구현 검증
 python -m iog_sim.examples.current_state_report  # 매일: 입력할 값 + 예상 화면 값
 python -m iog_sim.examples.round_plan            # 라운드 종료일까지 전체 기준 계획 (baseline CSV)
-python -m iog_sim.examples.demo_run              # 정책 4종 비교 (what-if, 약 1분)
-python -m iog_sim.examples.safety_stock_compare  # 안전재고 기준별 Balance 비교 (실수요, 여러 기간)
+python -m iog_sim.examples.demo_run              # 정책 6종 비교 (what-if)
 ```
 
 ## 매일 하는 일 (`examples/current_state_report.py`)
@@ -79,7 +78,7 @@ iog_sim/
     demand_data_P*.*     수요 파일 (최신 날짜 파일이 자동 선택됨)
   production/
     sequencing.py        makespan, SPT/LTWK/NEH(Taillard 가속), BestOf, CSV 로더
-    lotsizing.py         L4L / 고정배치 / Wagner-Whitin형 DP (makespan 오라클 내장)
+    lotsizing.py         고정 n일 배치(n=1 = L4L) / Wagner-Whitin형 DP (makespan 오라클 내장)
     safety_stock.py      완제품 안전재고 규칙 + 비용 임계비율(판매기회비 vs 재고유지비)
     t_500_20_{요일}.csv  P1 처리시간표   t2_500_20_{요일}.csv  P2 처리시간표
   material/
@@ -90,8 +89,7 @@ iog_sim/
   examples/
     current_state_report.py  매일 운영 리포트 (+ CSV 저장)
     round_plan.py            라운드 종료일까지 전체 기준 계획 (+ CSV 저장)
-    demo_run.py              정책 비교 런
-    safety_stock_compare.py  안전재고 기준별 Balance 비교
+    demo_run.py              정책 비교 런 (고정 1·2·3·5일 배치 / DP / DP+할인)
 ```
 
 ## 확정된 게임 규칙 (코드에 반영됨)
@@ -129,15 +127,22 @@ iog_sim/
 **완제품 안전재고** (`PolicySet.safety_stock`, `production/safety_stock.py`) — 규칙이 수요일별 누적 버퍼
 목표 ss_h를 내고, 엔진이 그 증분을 그날 수요에 더해 Lot sizing에 넘긴다. 서비스수준을 비우면(None)
 뉴스벤더 임계비율 Cu/(Cu+Co)를 쓴다: Cu = 판매기회비 250 + 놓친 마진(단가 − 자재비), Co = 재고유지비 30
-(P1 약 0.93, P2 약 0.94). 기본값은 구 방식 `EndOfHorizon(0.95)`이다. 기준별 비교는 `safety_stock_compare`.
+(P1 약 0.93, P2 약 0.94). 기본값은 구 방식 `EndOfHorizon(0.95)`이다.
 
 **라운드 종료** — 종료일에서 시뮬레이션을 멈추고, 종료일 뒤 날짜는 계획하지 않는다. 계획의 커버 구간이
 종료일에서 잘리면 남는 재고는 못 팔므로 Co에 자재비를 더한 임계비율로 안전재고를 낮춘다. 종료일 뒤에 도착하는 발주는 버리고, 종료일이 소요 시계(21일) 안에
 들어오면 발주량을 '남은 소요 − 재고포지션'으로 깎는다.
 
-**Job 시퀀스** — 실제 투입 순서는 `BestOf([SPT, LTWK, NEH])`(대개 NEH, SPT보다 makespan 약 10% 짧음).
-Lot sizing DP가 수백 번 호출하는 `planning_sequencer`는 빠른 LTWK를 쓴다. 따라서 DP가 보는 인건비는
-실제보다 약간 크다.
+**Lot sizing DP** (`production/lotsizing.py`) — 작업준비비 vs 인건비·잔업 vs 완제품 재고비를 한 목적함수로
+푼다. 비용은 장부와 같은 규칙이다: 매 달력일(주말 포함) 마감 재고 × 30원, Lot 올림 잔량은 다음 배치가
+덜 만들고, 하루 500 Job 상한에 걸려 못 만든 수량은 판매기회비로 센다. 주간계획 때는 확정 주 뒤
+`PolicySet.lookahead_days`(기본 7일)의 점예측까지 함께 풀고(rolling horizon), 확정은 그 주 날짜만 한다.
+`demo_run`은 고정 1·2·3·5일 배치와 DP를 나란히 돌려 비교한다.
+
+**Job 시퀀스** — 실제 투입 순서는 P1 `IteratedGreedy(800)`, P2 `BestOf([SPT, LTWK, NEH])`.
+DP의 makespan(`planning_sequencer`)은 BestOf로 구하고 `examples/reports/sequence_cache.json`에 남긴다.
+LTWK로 추정하면 P1 makespan을 약 15% 크게 봐서 없는 잔업을 피하려 배치를 쪼갠다. 남은 차이는
+IG가 BestOf보다 평균 0.9% 짧은 만큼이다. `planning_sequencer=None`이면 실제 sequencer를 그대로 쓴다.
 
 ## 시스템 화면 입력 형식
 

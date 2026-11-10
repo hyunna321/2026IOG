@@ -35,7 +35,7 @@ from .material.mrp import explode_bom, project_lots
 from .material.policy import MaterialPolicy, to_purchase_orders
 from .production.lotsizing import LotSizingPolicy
 from .production.safety_stock import EndOfHorizon, SafetyStockRule, stockout_critical_ratio
-from .production.sequencing import LTWK, Sequencer, SequenceResult
+from .production.sequencing import Sequencer, SequenceResult
 from .sales.discount import DiscountPolicy, effective_demand, unit_price
 from .state import DailyRecord, MaterialRecord, ProductionOrder, PurchaseOrder, WorldState
 
@@ -58,8 +58,13 @@ class PolicySet:
     # 완제품 안전재고 규칙. service_level None = 비용 임계비율(판매기회비 vs 재고유지비)
     safety_stock: SafetyStockRule = EndOfHorizon(0.95)
     label: str = "policy"
-    # Lot sizing DP가 후보 배치마다 수백 번 호출하는 '싼' Makespan 추정기
-    planning_sequencer: Sequencer = LTWK()
+    # Lot sizing이 후보 배치의 makespan을 구할 때 쓰는 sequencer. None이면 `sequencer`와 같다.
+    # 실제 순서보다 makespan을 크게 보는 규칙(LTWK는 P1에서 약 15% 과대)을 쓰면 DP가
+    # 없는 잔업을 피하려고 배치를 쪼갠다.
+    planning_sequencer: "Sequencer | Dict[str, Sequencer] | None" = None
+    # 주간계획 때 확정 구간 뒤로 더 내다보는 날 수 (rolling horizon). 이 구간은 배치 묶음
+    # 판단에만 쓰고 생산은 확정하지 않는다. 0이면 주 경계에서 계획이 끊긴다.
+    lookahead_days: int = 7
 
 
 @dataclass
@@ -70,6 +75,11 @@ class SimResult:
     seed: int = 0
     warmup_days: int = 0
     end: Optional[dt.date] = None             # 라운드 종료로 잘린 실제 마지막 날
+
+
+def _pick(seq: "Sequencer | Dict[str, Sequencer]", product: str) -> Sequencer:
+    """제품별 dict(P1만 IG 등)면 그 제품 것을 고른다."""
+    return seq[product] if isinstance(seq, dict) else seq
 
 
 class Simulator:
@@ -102,20 +112,22 @@ class Simulator:
     # Makespan 오라클 / 시퀀스
     # ------------------------------------------------------------------
     def makespan_for(self, product: str, date: dt.date, n_lots: int) -> float:
+        """Lot sizing용 makespan (`planning_sequencer`, 없으면 실제 sequencer)."""
         if n_lots <= 0:
             return 0.0
+        if self.pol.planning_sequencer is None:
+            return self.sequence_for(product, date, n_lots).makespan
         key = (product, date, n_lots)
         if key not in self._ms_cache:
-            self._ms_cache[key] = self.pol.planning_sequencer.solve(
-                self.pt(product, date, n_lots)).makespan
+            seq = _pick(self.pol.planning_sequencer, product)
+            self._ms_cache[key] = seq.solve(self.pt(product, date, n_lots)).makespan
         return self._ms_cache[key]
 
     def sequence_for(self, product: str, date: dt.date, n_lots: int) -> SequenceResult:
+        """실제 투입 순서 (제출용)."""
         key = (product, date, n_lots)
         if key not in self._seq_cache:
-            seq = self.pol.sequencer
-            if isinstance(seq, dict):                 # 제품별 sequencer (P1만 IG 등)
-                seq = seq[product]
+            seq = _pick(self.pol.sequencer, product)
             self._seq_cache[key] = seq.solve(self.pt(product, date, n_lots))
         return self._seq_cache[key]
 
@@ -453,6 +465,8 @@ class Simulator:
 
         안전재고: 규칙이 준 누적 버퍼 목표 ss_h의 증분을 그날 수요에 더해 Lot sizing에 넘긴다.
         종료일이 커버 구간을 자르면 남는 재고는 못 팔므로 Co에 자재비를 넣은 임계비율로 낮춘다.
+
+        Lot sizing은 커버 구간 뒤 `lookahead_days`일까지 함께 보고 풀지만, 확정은 `week` 날짜만 한다.
         """
         week = [x for x in week if self._in_round(x)]
         if not week:
@@ -478,10 +492,25 @@ class Simulator:
             increments = np.diff(np.concatenate([[0], ss]))
             planned_demand = {day: point[day] + int(inc)
                               for day, inc in zip(fc.dates, increments)}
+
+            # rolling horizon: 확정 구간 뒤 lookahead_days일의 점예측(안전재고 없음)과 생산가능일을
+            # 같이 넘겨, 주 끝 배치가 다음 주와 묶는 편이 싼지까지 보게 한다. 확정은 `week` 안만.
+            look = [x for x in self.cal.date_range(
+                        horizon[-1] + dt.timedelta(days=1),
+                        horizon[-1] + dt.timedelta(days=self.pol.lookahead_days))
+                    if self._in_round(x)] if self.pol.lookahead_days > 0 else []
+            look_targets = self.cal.demand_days(look, spec.market_days_only)
+            if look_targets:
+                fc_all = self.pol.forecaster[code].fit_predict(
+                    history, target_dates + look_targets, origin)
+                planned_demand.update({k: max(0, int(round(v)))
+                                       for k, v in zip(fc_all.dates, fc_all.mu)
+                                       if k in look_targets})
             plan = self.pol.lot_sizing.plan(
                 product=spec,
                 demand_by_date=planned_demand,
-                production_days=[x for x in week if self.cal.is_production_day(x, weekdays_only)],
+                production_days=[x for x in list(week) + look
+                                 if self.cal.is_production_day(x, weekdays_only)],
                 opening_inventory=state.fg_inventory.get(code, 0),
                 makespan_oracle=lambda day, lots, c=code: self.makespan_for(c, day, lots),
                 availability_lag=lag,
@@ -489,6 +518,7 @@ class Simulator:
             for day in week:
                 state.production_plan.get(day, {}).pop(code, None)
             for day, lots in plan.lots_by_date.items():
-                state.production_plan.setdefault(day, {})[code] = ProductionOrder(
-                    product=code, date=day, n_lots=lots)
+                if day in week:
+                    state.production_plan.setdefault(day, {})[code] = ProductionOrder(
+                        product=code, date=day, n_lots=lots)
         state.planned_through = max(filter(None, (state.planned_through, week[-1])))
