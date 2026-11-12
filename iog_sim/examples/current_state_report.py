@@ -35,14 +35,14 @@ SNAPSHOT_PATH = Path(__file__).resolve().parent / "daily_snapshot.json"
 # ▼▼▼ 입력 ① 매일 갱신 ▼▼▼  (어제 20시 틱 이후 화면 값)
 # ############################################################################
 
-TODAY = dt.date(2026, 11, 11)
+TODAY = dt.date(2026, 11, 12)
 
 # [Material 화면] Material inventory in/out summary
 #   자재: (Total in, Total out, Current level).  Current level이 시뮬레이션 시작 재고가 된다.
 MATERIAL_INVENTORY_INOUT = {
-    "M1": (1_859_342, 1_451_000, 408_342),
-    "M2": (5_000_000, 4_444_000, 556_000),
-    "M3": (996_667, 771_000, 225_667),
+    "M1": (1_859_342, 1_649_000, 210_342),
+    "M2": (7_226_500, 4_992_000, 2_234_500),
+    "M3": (996_667, 847_000, 149_667),
 }
 
 # [Material 화면] Material plans
@@ -50,7 +50,6 @@ MATERIAL_INVENTORY_INOUT = {
 #   입고일이 None인 행만 입고예정으로 쓴다. 빠뜨리면 같은 물량을 한 번 더 발주한다.
 #   도착 예정일은 발주일 + 리드타임(config)으로 계산한다.
 MATERIAL_PLANS = [
-    ("M2", "normal", 2_226_500, dt.date(2026, 11, 3), None),
     ("M3", "normal", 515_188, dt.date(2026, 11, 8), None),
     ("M2", "normal", 1_820_185, dt.date(2026, 11, 9), None),
     ("M1", "normal", 650_936, dt.date(2026, 11, 9), None),
@@ -61,12 +60,12 @@ MATERIAL_PLANS = [
 #   제품: (Total in, Total out, Current level).  Current level이 시뮬레이션 시작 재고가 된다.
 #   모르는 칸은 None (검산만 건너뛴다).
 SALES_INVENTORY_INOUT = {
-    "P1": (1_451_000, 1_440_700, 10_300),
-    "P2": (771_000, 766_783, 4_217),
+    "P1": (1_649_000, 1_645_700, 3_300),
+    "P2": (847_000, 840_336, 6_664),
 }
 
 # [Ledger 화면] Balance. expected_balance 열의 기준선일 뿐 발주·할인·계획에는 영향이 없다.
-CURRENT_BALANCE = 152_232_330
+CURRENT_BALANCE = 133_120_284
 
 # ############################################################################
 # ▼▼▼ 입력 ② 토요일마다 갱신 ▼▼▼  (제출해서 확정된 이번 주 Production 계획)
@@ -100,8 +99,9 @@ OBSERVED_DEMAND: Dict[str, Dict[dt.date, int]] = {
         dt.date(2026, 11, 6): 193_500,
         dt.date(2026, 11, 7): 0,
         dt.date(2026, 11, 8): 0,
-        dt.date(2026, 11, 9): 187_400,
+        dt.date(2026, 11, 9): 187_000,
         dt.date(2026, 11, 10): 198_500,
+        dt.date(2026, 11, 11): 203_800,
     },
     "P2": {
         dt.date(2026, 10, 28): 80_793,
@@ -118,6 +118,7 @@ OBSERVED_DEMAND: Dict[str, Dict[dt.date, int]] = {
         dt.date(2026, 11, 8): 75_764,
         dt.date(2026, 11, 9): 74_067,
         dt.date(2026, 11, 10): 74_643,
+        dt.date(2026, 11, 11): 73_553,
     },
 }
 # ############################################################################
