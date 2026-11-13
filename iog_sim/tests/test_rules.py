@@ -894,3 +894,28 @@ def test_lookahead_never_commits_next_week():
     sim._plan_week(state, decision, week)
     planned = [day for day, by in state.production_plan.items() if by]
     assert planned and all(day in week for day in planned)
+
+
+def test_ss_lot_scale_shrinks_only_the_cycle_quantity():
+    """lot_scale은 S = s + EOQ x lot_scale로 발주 크기만 줄인다 (재주문점 s·안전재고는 그대로)."""
+    from iog_sim.config import SimConfig
+    from iog_sim.material.policy import SsPolicy, eoq, safety_stock
+    from iog_sim.state import WorldState
+    spec = SimConfig().materials["M1"]
+    today = dt.date(2026, 11, 16)
+    req = {today + dt.timedelta(days=i): 200_000.0 for i in range(1, 30)}
+    lt = spec.option("normal").lead_time_days
+    s = 200_000 * lt + safety_stock(10_000, lt, 1.65)
+    q = eoq(200_000, spec.order_cost, spec.holding_cost)
+    full = SsPolicy().decide(today, WorldState(), spec, req, 10_000)[0].qty
+    small = SsPolicy(lot_scale=0.75).decide(today, WorldState(), spec, req, 10_000)[0].qty
+    assert full == round(s + q)
+    assert small == round(s + 0.75 * q)
+
+
+def test_report_policy_orders_m1_m3_at_075_eoq_and_m2_at_eoq():
+    """2026-11-13 재검증: M1·M3만 EOQ x 0.75, M2(주문비 3M)는 EOQ 그대로."""
+    from iog_sim.examples.current_state_report import POLICY
+    assert POLICY.material["M1"].lot_scale == 0.75
+    assert POLICY.material["M3"].lot_scale == 0.75
+    assert POLICY.material["M2"].base.lot_scale == 1.0

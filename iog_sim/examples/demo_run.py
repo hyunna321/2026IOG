@@ -103,6 +103,10 @@ SEQUENCER = {
 PLANNING_SEQUENCER = DiskCached(BASE_SEQUENCER, SEQUENCE_CACHE, label="BestOf")
 
 
+# M1·M3 발주 크기 = EOQ x 0.75 (2026-11-13 재검증: 0.7~0.8배 모두 +8~10M/라운드, M2는 줄이면 손해)
+M13_LOT_SCALE = 0.75
+
+
 def base_policy(label: str, lot_sizing, discount, z: float = 1.65,
                 safety_stock: SafetyStockRule = EndOfHorizon(0.95)) -> PolicySet:
     return PolicySet(
@@ -112,9 +116,9 @@ def base_policy(label: str, lot_sizing, discount, z: float = 1.65,
         sequencer=SEQUENCER,
         planning_sequencer=PLANNING_SEQUENCER,
         material={
-            "M1": SsPolicy(z=z),
-            "M2": DualSourcingPolicy(z_normal=z),
-            "M3": SsPolicy(z=z),
+            "M1": SsPolicy(z=z, lot_scale=M13_LOT_SCALE),
+            "M2": DualSourcingPolicy(z_normal=z),          # M2는 주문비 3M이라 EOQ 그대로가 최적
+            "M3": SsPolicy(z=z, lot_scale=M13_LOT_SCALE),
         },
         discount=discount,
         safety_stock=safety_stock,

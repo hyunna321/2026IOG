@@ -75,9 +75,12 @@ class SsPolicy(MaterialPolicy):
 
     name = "sS"
 
-    def __init__(self, z: float = 1.65, cover_days: Optional[int] = None):
+    def __init__(self, z: float = 1.65, cover_days: Optional[int] = None, lot_scale: float = 1.0):
         self.z = z
         self.cover_days = cover_days   # None이면 EOQ 사용
+        # 발주 크기 배수 (EOQ x lot_scale). M1은 주말에 안 쓰여도 매일 보관비가 붙고 M3는 보관비가 2배라
+        # EOQ보다 작게 받는 편이 낫다 (report_draft/material_lot_recheck.py: 0.75배 31라운드 전승 +10.2M).
+        self.lot_scale = lot_scale
 
     def decide(self, date, state, spec, requirements, sigma_daily) -> List[OrderDecision]:
         opt = spec.option("normal")
@@ -89,7 +92,7 @@ class SsPolicy(MaterialPolicy):
         ss = safety_stock(sigma_daily, lt, self.z)
         s = d_lt + ss
         q = (daily * self.cover_days) if self.cover_days else eoq(daily, spec.order_cost, spec.holding_cost)
-        S = s + q
+        S = s + q * self.lot_scale
 
         pos = state.inventory_position(spec.code)
         if pos < s:
