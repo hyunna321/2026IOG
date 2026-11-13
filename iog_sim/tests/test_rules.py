@@ -926,3 +926,39 @@ def test_report_policy_m2_urgent_safety_factor_is_165():
     from iog_sim.examples.current_state_report import POLICY
     assert POLICY.material["M2"].z_urgent == 1.65
     assert POLICY.material["M2"].base.z == 1.65
+
+
+def test_duplicate_date_keys_stop_the_report():
+    """11/8 사례: OBSERVED_DEMAND P1에 11/6을 두 번 적어 0이 193,500을 덮어씀. 소스에서 찾아 중단해야 한다."""
+    from iog_sim.examples.current_state_report import check_duplicate_dates
+    src = '''
+OBSERVED_DEMAND: Dict[str, Dict[dt.date, int]] = {
+    "P1": {dt.date(2026, 11, 5): 201_500, dt.date(2026, 11, 6): 193_500, dt.date(2026, 11, 6): 0},
+    "P2": {dt.date(2026, 11, 6): 75_375, dt.date(2026, 11, 7): 75_949},
+}
+LOCKED_PRODUCTION_PLAN = {dt.date(2026, 11, 8): {"P1": 0}, dt.date(2026, 11, 8): {"P1": 5}}
+OTHER = {dt.date(2026, 1, 1): 1, dt.date(2026, 1, 1): 2}
+'''
+    errors = check_duplicate_dates(src)
+    assert len(errors) == 2
+    assert "OBSERVED_DEMAND" in errors[0] and "11-06" in errors[0]
+    assert "LOCKED_PRODUCTION_PLAN" in errors[1] and "11-08" in errors[1]
+    assert check_duplicate_dates(src.replace("dt.date(2026, 11, 6): 0", "dt.date(2026, 11, 7): 0")
+                                 .replace('{"P1": 5}', '{"P1": 5}').replace(
+                                     'dt.date(2026, 11, 8): {"P1": 5}', 'dt.date(2026, 11, 9): {"P1": 5}')) == []
+
+
+def test_zero_p1_demand_on_market_day_needs_confirmation(monkeypatch):
+    """P1 주말 0은 괜찮고, 개장 평일 0은 '수요 0개'로 예측을 끌어내리므로 확인을 받아야 한다."""
+    import iog_sim.examples.current_state_report as r
+    monkeypatch.setattr(r, "OBSERVED_DEMAND", {"P1": {dt.date(2026, 11, 6): 0, dt.date(2026, 11, 7): 0,
+                                                      dt.date(2026, 11, 5): 201_500}, "P2": {}})
+    warnings = r.check_zero_on_market_days(GameCalendar())
+    assert len(warnings) == 1 and "11-06" in warnings[0]
+
+
+def test_current_report_inputs_have_no_duplicate_dates():
+    """커밋된 입력 파일 자체에 날짜 중복이 없어야 한다."""
+    from pathlib import Path
+    import iog_sim.examples.current_state_report as r
+    assert r.check_duplicate_dates(Path(r.__file__).read_text(encoding="utf-8")) == []

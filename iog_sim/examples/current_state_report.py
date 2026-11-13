@@ -186,6 +186,47 @@ def check_hard(today: dt.date, history: Dict[str, dict],
     return errors
 
 
+def check_duplicate_dates(source: str) -> List[str]:
+    """OBSERVED_DEMAND·LOCKED_PRODUCTION_PLAN 안에 같은 날짜를 두 번 적은 줄 -> 중단.
+
+    파이썬 dict는 같은 키를 두 번 쓰면 뒤 값으로 조용히 덮어써서 실행 중에는 알 수 없다
+    (11/8: P1 11/6이 193,500 다음 0으로 덮여 P1 예측 +9천). 그래서 소스를 직접 읽어 찾는다.
+    """
+    import ast
+    errors = []
+    for node in ast.walk(ast.parse(source)):
+        target = node.target if isinstance(node, ast.AnnAssign) else (
+            node.targets[0] if isinstance(node, ast.Assign) and len(node.targets) == 1 else None)
+        name = getattr(target, "id", None)
+        if name not in ("OBSERVED_DEMAND", "LOCKED_PRODUCTION_PLAN") or node.value is None:
+            continue
+        for sub in ast.walk(node.value):
+            if not isinstance(sub, ast.Dict):
+                continue
+            seen = set()
+            for key in sub.keys:
+                if not (isinstance(key, ast.Call) and getattr(key.func, "attr", None) == "date"
+                        and all(isinstance(a, ast.Constant) for a in key.args)):
+                    continue
+                day = dt.date(*(a.value for a in key.args))
+                if day in seen:
+                    errors.append(f"{name}에 {day:%m-%d}가 두 번 있음 (줄 {key.lineno}) -> "
+                                  f"뒤 값이 앞 값을 덮어씁니다. 날짜를 확인하세요")
+                seen.add(day)
+    return errors
+
+
+def check_zero_on_market_days(cal: GameCalendar) -> List[str]:
+    """P1 OBSERVED_DEMAND에 장이 열린 평일을 0으로 적음 -> 확인 후 진행.
+
+    주말·휴장일 0은 예측에서 빠지지만, 개장일 0은 '수요 0개'로 예측을 끌어내린다.
+    달력에 없는 임시 휴장일일 수도 있어 중단하지 않고 확인을 받는다.
+    """
+    return [f"OBSERVED_DEMAND P1 {d:%m-%d}({d:%a}) = 0인데 달력상 개장일 -> 휴장일이 아니면 실제 수요를 넣으세요"
+            for d, v in sorted(OBSERVED_DEMAND.get("P1", {}).items())
+            if v == 0 and cal.is_market_day(d)]
+
+
 def check_inputs(cfg: SimConfig, today: dt.date) -> List[str]:
     """입고 예정일이 지났는데 미입고로 남은 발주. 실제 입고 지연일 수도 있어 '확인 후 진행'."""
     warnings = []
@@ -377,7 +418,8 @@ def main() -> None:
             "  Material·Sales 화면 값을 같은 날(어제 20시 정산 이후) 화면에서 다시 옮겨 적으세요.\n"
             "  화면 값 자체가 어긋난 것을 확인했을 때만 SKIP_BOM_CHECK = True로 두고 실행하세요.")
     history = _load_snapshots()
-    hard = check_hard(TODAY, history, cal.round_end_for(TODAY))
+    hard = (check_hard(TODAY, history, cal.round_end_for(TODAY))
+            + check_duplicate_dates(Path(__file__).read_text(encoding="utf-8")))
     if hard:
         _print_warnings(hard, "[중단] 입력 오류 - 고치기 전에는 실행할 수 없습니다")
         raise SystemExit("\n[중단] 위 입력 오류를 고친 뒤 다시 실행하세요.")
@@ -392,7 +434,8 @@ def main() -> None:
     for code, points in OBSERVED_DEMAND.items():
         full_demand[code].update(points)
     warnings = (bom_errors + check_inputs(cfg, TODAY) + check_against_snapshot(history, TODAY)
-                + check_missing_orders(history, TODAY) + check_demand_jumps(full_demand, TODAY))
+                + check_missing_orders(history, TODAY) + check_demand_jumps(full_demand, TODAY)
+                + check_zero_on_market_days(cal))
     _confirm(warnings)
 
     deadline = cal.next_decision_day(TODAY)      # 이번 주 제출 마감 (토)
