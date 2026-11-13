@@ -962,3 +962,51 @@ def test_current_report_inputs_have_no_duplicate_dates():
     from pathlib import Path
     import iog_sim.examples.current_state_report as r
     assert r.check_duplicate_dates(Path(r.__file__).read_text(encoding="utf-8")) == []
+
+
+def test_backfill_origin_uses_todays_observed_demand():
+    """16시 이후 실행: backfill_origin=start면 start 당일 실측까지 넣어 예측한다 (기본은 start-1)."""
+    import numpy as np
+    from iog_sim.config import SimConfig
+    from iog_sim.demand.forecaster import NaiveForecaster
+    from iog_sim.demand.generator import HistoricalReplay
+    from iog_sim.engine import PolicySet, Simulator
+    from iog_sim.material.policy import SsPolicy
+    from iog_sim.production.lotsizing import FixedBatchDays
+    from iog_sim.production.sequencing import LTWK
+    from iog_sim.sales.discount import NoDiscount
+
+    cal = GameCalendar()
+    start = dt.date(2026, 11, 17)                     # 화요일
+    days = cal.date_range(start - dt.timedelta(days=90), start + dt.timedelta(days=10))
+    series = {p: {d: (40_000 if d == start else 20_000) for d in days} for p in ("P1", "P2")}
+    for d in days:
+        if not cal.is_market_day(d):
+            series["P1"][d] = 0
+    table = np.random.default_rng(0).uniform(30, 62, size=(500, 20))
+
+    def forecast_tomorrow(**kw):
+        pol = PolicySet(forecaster={"P1": NaiveForecaster(), "P2": NaiveForecaster()},
+                        lot_sizing=FixedBatchDays(1), sequencer=LTWK(), planning_sequencer=LTWK(),
+                        material={m: SsPolicy() for m in ("M1", "M2", "M3")}, discount=NoDiscount(),
+                        label="t", lookahead_days=0)
+        sim = Simulator(SimConfig(), cal, HistoricalReplay(series={p: dict(s) for p, s in series.items()}),
+                        pol, lambda product, date, n: table[:n])
+        res = sim.run(start, start, backfill_current_week=True, **kw)
+        return res.state.forecast_cache["P2"][start + dt.timedelta(days=1)]
+
+    assert forecast_tomorrow() == 20_000
+    assert forecast_tomorrow(backfill_origin=start) == 40_000
+
+
+def test_forecast_origin_is_today_only_when_all_todays_demand_is_observed(monkeypatch):
+    import iog_sim.examples.current_state_report as r
+    from iog_sim.config import SimConfig
+    cal, cfg = GameCalendar(), SimConfig()
+    tue, sat = dt.date(2026, 11, 17), dt.date(2026, 11, 21)
+    monkeypatch.setattr(r, "OBSERVED_DEMAND", {"P1": {tue: 190_000}, "P2": {tue: 75_000}})
+    assert r.forecast_origin(cal, cfg, tue) == tue
+    monkeypatch.setattr(r, "OBSERVED_DEMAND", {"P1": {}, "P2": {tue: 75_000}})
+    assert r.forecast_origin(cal, cfg, tue) == tue - dt.timedelta(days=1)   # P1 개장일인데 없음
+    monkeypatch.setattr(r, "OBSERVED_DEMAND", {"P1": {}, "P2": {sat: 74_000}})
+    assert r.forecast_origin(cal, cfg, sat) == sat                         # 토요일 P1은 수요 없음

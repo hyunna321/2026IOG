@@ -216,6 +216,19 @@ def check_duplicate_dates(source: str) -> List[str]:
     return errors
 
 
+def forecast_origin(cal: GameCalendar, cfg: SimConfig, today: dt.date) -> dt.date:
+    """오늘 수요가 생기는 제품 전부의 오늘 실측이 OBSERVED_DEMAND에 있으면 오늘, 아니면 어제.
+
+    시스템은 16시에 그날 수요를 공시한다. 그 뒤 실행하면 그날 수요까지 반영해 예측·발주할 수 있다
+    (대회 팁). 한 제품이라도 오늘 값이 없으면 예측 원점이 제품마다 달라지지 않게 어제로 둔다.
+    P1은 휴장일이면 오늘 수요가 없으므로 따지지 않는다.
+    """
+    for code, spec in cfg.products.items():
+        if cal.demand_days([today], spec.market_days_only) and today not in OBSERVED_DEMAND.get(code, {}):
+            return today - dt.timedelta(days=1)
+    return today
+
+
 def check_zero_on_market_days(cal: GameCalendar) -> List[str]:
     """P1 OBSERVED_DEMAND에 장이 열린 평일을 0으로 적음 -> 확인 후 진행.
 
@@ -444,6 +457,12 @@ def main() -> None:
     sim_end = min(plan_week[-1], round_end) if round_end else plan_week[-1]
     if round_end:
         print(f"  라운드 종료: {round_end} (이후 생산·발주 없음, 종료 주는 안전재고 없이 계획)")
+    origin = forecast_origin(cal, cfg, TODAY)
+    if origin == TODAY:
+        print(f"  예측 원점: 오늘({TODAY:%m-%d}) - OBSERVED_DEMAND의 오늘 수요까지 반영")
+    else:
+        print(f"  예측 원점: 어제({origin:%m-%d}) - 오늘 수요를 반영하려면 16시 이후 실행하고 "
+              f"OBSERVED_DEMAND에 오늘 날짜를 넣으세요")
     print()
 
     sim = build(POLICY)
@@ -457,7 +476,7 @@ def main() -> None:
         {code: cal.demand_days(window, spec.market_days_only)
          for code, spec in cfg.products.items()},
         window,
-        origin=TODAY - dt.timedelta(days=1),
+        origin=origin,
     )
 
     res = sim.run(
@@ -468,6 +487,7 @@ def main() -> None:
         backfill_current_week=True,
         locked_production_plan=LOCKED_PRODUCTION_PLAN,
         initial_open_orders=open_orders,
+        backfill_origin=origin,
     )
     seq_fn = lambda code, d, lots: sim.sequence_for(code, d, lots).job_ids()  # noqa: E731
     seq_cols = ["P1_sequence", "P2_sequence"]

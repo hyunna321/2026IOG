@@ -140,7 +140,8 @@ class Simulator:
             initial_mat_inventory: Optional[Dict[str, int]] = None,
             backfill_current_week: bool = False,
             locked_production_plan: Optional[Dict[dt.date, Dict[str, int]]] = None,
-            initial_open_orders: Optional[List[PurchaseOrder]] = None) -> SimResult:
+            initial_open_orders: Optional[List[PurchaseOrder]] = None,
+            backfill_origin: Optional[dt.date] = None) -> SimResult:
         """start~end를 하루씩 진행한다. end가 라운드 종료일을 넘으면 종료일에서 멈춘다.
 
         warmup_days: 집계(summary)에서 앞 구간을 뺀다. 시작 직후의 품절은 정책이 아니라
@@ -150,6 +151,8 @@ class Simulator:
             start~이번 주 토요일까지만 계획을 깐다. 다음 주 날짜는 건드리지 않는다.
         locked_production_plan: {날짜: {제품: Lot수}}. 이미 제출된 계획. 그날 계획을 통째로 대체한다.
         initial_open_orders: 이미 발주해 아직 도착하지 않은 주문. 구매비·주문비는 입고일에 반영한다.
+        backfill_origin: backfill 예측 원점 (기본 start-1). 오후 4시 이후 실행해 start 당일 실측
+            수요를 이미 알면 start로 줘서, 당일 자재 발주에 쓰는 예측까지 그날 수요를 반영한다.
         """
         self.demand.reset(seed)
         self._round_end = self.cal.round_end_for(start)
@@ -178,7 +181,7 @@ class Simulator:
                 for o in initial_open_orders)
 
         if backfill_current_week:
-            origin = start - dt.timedelta(days=1)
+            origin = backfill_origin or start - dt.timedelta(days=1)
             self._plan_week(state, origin,
                             self.cal.date_range(start, self.cal.next_decision_day(start)))
         if locked_production_plan:
