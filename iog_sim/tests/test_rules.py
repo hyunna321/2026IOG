@@ -919,3 +919,10 @@ def test_report_policy_orders_m1_m3_at_075_eoq_and_m2_at_eoq():
     assert POLICY.material["M1"].lot_scale == 0.75
     assert POLICY.material["M3"].lot_scale == 0.75
     assert POLICY.material["M2"].base.lot_scale == 1.0
+
+
+def test_report_policy_m2_urgent_safety_factor_is_165():
+    """2026-11-13 재검증: M2 긴급 판단 안전계수 2.33 -> 1.65 (31라운드 +0.7M, 진 적 없음). 일반 경로 z는 1.65 그대로."""
+    from iog_sim.examples.current_state_report import POLICY
+    assert POLICY.material["M2"].z_urgent == 1.65
+    assert POLICY.material["M2"].base.z == 1.65
