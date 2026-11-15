@@ -295,6 +295,30 @@ class DiskCached(Sequencer):
         return res
 
 
+class TabulatedMakespan(Sequencer):
+    """실험 전용: 미리 계산한 {처리시간 행렬 해시: makespan} 표를 찾아 쓴다.
+
+    정책 비교는 수천 번 시뮬레이션을 돌리므로 배치마다 NEH를 풀 수 없다. 표에 없으면 inner로 계산한다.
+    **순서는 저장하지 않으므로**(order = 0..n-1) 제출용 Job sequence에는 쓰지 말 것.
+    """
+
+    def __init__(self, inner: Sequencer, table: dict):
+        self.inner = inner
+        self.name = f"table({inner.name})"
+        self.table = table
+
+    @staticmethod
+    def key(p: np.ndarray) -> str:
+        import hashlib
+        return f"{p.shape[0]}x{p.shape[1]}:{hashlib.sha1(p.tobytes()).hexdigest()}"
+
+    def solve(self, p) -> SequenceResult:
+        k = self.key(p)
+        if k not in self.table:
+            self.table[k] = self.inner.solve(p).makespan
+        return SequenceResult(list(range(p.shape[0])), float(self.table[k]), self.name)
+
+
 # ---------------------------------------------------------------------------
 # 처리시간 테이블 로더
 # ---------------------------------------------------------------------------

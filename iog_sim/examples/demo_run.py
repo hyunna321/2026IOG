@@ -1,7 +1,7 @@
-"""엔드투엔드 스모크 런.
+"""공용 부품: 실수요 로더, 처리시간표, 운영 정책(POLICIES), 시뮬레이터 빌더.
 
-제공된 실데이터(수요 CSV, ProcessingTimeTable CSV)로 엔진을 한 바퀴 돌려,
-배선(이벤트 순서, 비용 회계, 정책 인터페이스)이 맞물리는지 확인한다.
+current_state_report / round_plan이 여기서 정책을 가져간다. 정책끼리의 비교·튜닝은
+`examples/optimize.py`(여러 라운드 시나리오 짝비교)에서 한다.
 
 수요예측은 alpha=0.9 SES(SimpleExponentialSmoothingForecaster)로 고정한다.
 휴장일은 `calendar.MARKET_HOLIDAYS_BY_MONTH`에 월별로 하드코딩한다.
@@ -20,20 +20,15 @@ from iog_sim.config import SimConfig
 from iog_sim.demand.forecaster import SimpleExponentialSmoothingForecaster
 from iog_sim.demand.generator import HistoricalReplay, load_historical_replay
 from iog_sim.engine import PolicySet, Simulator
-from iog_sim.experiment import cost_decomposition, cost_detail, run_experiment
 from iog_sim.material.policy import DualSourcingPolicy, SsPolicy
 from iog_sim.production.lotsizing import DynamicLotSizing, FixedBatchDays
-from iog_sim.production.safety_stock import EndOfHorizon, SafetyStockRule
+from iog_sim.production.safety_stock import CumulativeModelSigma, EndOfHorizon, SafetyStockRule
 from iog_sim.production.sequencing import (BestOf, DiskCached, IteratedGreedy, LTWK, NEH, SPT,
                                           Memoized, load_processing_times)
 from iog_sim.sales.discount import MarginalProfitOptimizer, NoDiscount
 
 DATA_DIR = Path(__file__).resolve().parent.parent    # iog_sim/iog_sim
 _CAL = GameCalendar()
-
-START = dt.date(2026, 1, 5)
-END = dt.date(2026, 3, 14)      # 10주 (앞 2주는 워밍업으로 집계 제외)
-
 
 # --- 1. 실수요 (제공된 CSV 재생) ---------------------------------------------
 
@@ -92,9 +87,16 @@ def processing_times(product: str, date: dt.date, n_lots: int) -> np.ndarray:
 BASE_SEQUENCER = Memoized(BestOf([SPT(), LTWK(), NEH()]))
 SEQUENCE_CACHE = Path(__file__).resolve().parent / "reports" / "sequence_cache.json"
 SEQUENCE_CACHE.parent.mkdir(parents=True, exist_ok=True)
+_P1_IG800 = DiskCached(IteratedGreedy(iterations=800, start=BASE_SEQUENCER), SEQUENCE_CACHE,
+                       label="IG800(BestOf)")
+# 2026-11-14: 상위팀 P1 makespan이 같은 처리시간표에서 1~3% 짧았다. IG800 해에서 시드 1·2로
+# 8,000회씩 이어 돌리면 70~180 줄어든다 (하루 잔업 최대 4시간). 배치당 약 3분이라 첫 실행만 느리고,
+# 같은 (요일, Job 수)는 캐시에서 바로 읽는다. IG는 시작 해보다 나빠지지 않는다.
 SEQUENCER = {
-    "P1": DiskCached(IteratedGreedy(iterations=800, start=BASE_SEQUENCER), SEQUENCE_CACHE,
-                     label="IG800(BestOf)"),
+    "P1": DiskCached(
+        IteratedGreedy(iterations=8000, seed=2,
+                       start=IteratedGreedy(iterations=8000, seed=1, start=_P1_IG800)),
+        SEQUENCE_CACHE, label="IG800+8000s1+8000s2(BestOf)"),
     "P2": BASE_SEQUENCER,
 }
 # Lot sizing DP용 makespan. 실제 순서와 같은 BestOf로 구해야 잔업 경계 판단이 맞다
@@ -133,6 +135,11 @@ POLICIES = [
     *(base_policy(f"{n}일배치+할인없음", FixedBatchDays(n), NoDiscount()) for n in (1, 2, 3, 5)),
     base_policy("DP+할인없음", DynamicLotSizing(), NoDiscount()),
     base_policy("DP+한계이익할인", DynamicLotSizing(), MarginalProfitOptimizer()),
+    # 운영 정책 (2026-11-14~). 11-12 P1 8,500개 품절 뒤, 주 마지막 날에만 버퍼를 두던 EndOfHorizon 대신
+    # 누적 예측오차 버퍼(서비스수준 0.75)를 쓴다. 12라운드 백테스트 평균 +2.3M/라운드(유의하지 않음),
+    # 11-15 주 몬테카를로에서 품절확률 73% -> 45%, 순비용 -3M.
+    base_policy("DP+한계이익할인+누적버퍼0.75", DynamicLotSizing(), MarginalProfitOptimizer(),
+                safety_stock=CumulativeModelSigma(0.75)),
 ]
 
 
@@ -145,11 +152,3 @@ def build(policy: PolicySet) -> Simulator:
         processing_times=processing_times,
     )
 
-
-if __name__ == "__main__":
-    result = run_experiment(build, POLICIES, START, END, n_replications=1)
-    print(cost_decomposition(result).to_string())
-    print()
-    print(cost_detail(result).to_string())
-    print()
-    print(result.compare(baseline="1일배치+할인없음").to_string(index=False))

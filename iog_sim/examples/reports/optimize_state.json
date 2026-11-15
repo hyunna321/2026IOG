@@ -1,0 +1,97 @@
+{
+ "history": [
+  {
+   "stage": "lotsizing",
+   "adopted": null
+  },
+  {
+   "stage": "discount",
+   "adopted": "할인없음",
+   "params": {
+    "discount": "none"
+   },
+   "mean_diff": 7496354.25,
+   "t": 8.527968743133442
+  },
+  {
+   "stage": "safety",
+   "adopted": null
+  },
+  {
+   "stage": "safety_low",
+   "adopted": null
+  },
+  {
+   "stage": "material",
+   "adopted": "z1.0/3일",
+   "params": {
+    "discount": "none",
+    "cover": 3
+   },
+   "mean_diff": 6515213.0,
+   "t": 3.1021297803817265,
+   "note": "z는 유의차 없어 1.65 유지, 주문량만 3일치"
+  },
+  {
+   "stage": "cover_fine",
+   "adopted": null
+  },
+  {
+   "stage": "material_z",
+   "adopted": "z1.0",
+   "params": {
+    "discount": "none",
+    "cover": 3,
+    "z": 1.0
+   },
+   "mean_diff": 580000.0,
+   "t": 3.75,
+   "note": "z1.0/3일 vs z1.65/3일 짝비교"
+  },
+  {
+   "stage": "z_fine",
+   "adopted": null,
+   "params": {
+    "discount": "none",
+    "cover": 3,
+    "z": 0.9
+   },
+   "mean_diff": 85550.91666666667,
+   "t": 2.0532722247209603,
+   "note": "z0.9 +0.09M t=2.05: 후보 5개 다중비교라 기각, z1.0 유지"
+  },
+  {
+   "stage": "urgent",
+   "adopted": "zu1.65/slack1",
+   "params": {
+    "discount": "none",
+    "cover": 3,
+    "z": 1.0,
+    "z_urgent": 1.65,
+    "slack": 1
+   },
+   "mean_diff": 243869.0,
+   "t": 2.7085651033970524
+  },
+  {
+   "stage": "urgent_low",
+   "adopted": "zu1.0",
+   "params": {
+    "discount": "none",
+    "cover": 3,
+    "z": 1.0,
+    "z_urgent": 1.0,
+    "slack": 1
+   },
+   "mean_diff": 233113.66666666666,
+   "t": 2.7085598018328754
+  }
+ ],
+ "adopted": {
+  "discount": "none",
+  "cover": 3,
+  "z": 1.0,
+  "z_urgent": 1.0,
+  "slack": 1
+ }
+}

@@ -2,3 +2,6 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+
+# optimize.py가 만드는 파생 파일 (python -m iog_sim.examples.optimize table 로 다시 생성)
+iog_sim/examples/reports/makespan_table.json

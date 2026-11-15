@@ -89,10 +89,13 @@ class SimpleExponentialSmoothingForecaster(Forecaster):
     name = "ses"
     ALPHA = 0.9
 
+    def __init__(self, alpha: float = ALPHA):
+        self.alpha = alpha
+
     def fit_predict(self, history, target_dates, origin) -> ForecastResult:
         h = len(target_dates)
         y = np.asarray(history, dtype=float)
-        alpha = self.ALPHA
+        alpha = self.alpha
 
         level = y[0]
         resid = np.empty(len(y) - 1, dtype=float)

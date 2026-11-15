@@ -1,26 +1,44 @@
-"""what-if 실험 러너.
+"""what-if 실험 러너 - 여러 수요 시나리오에서 정책의 Balance를 짝지어 비교한다.
 
-이 시뮬레이터의 1차 목적은 '정책 비교'다. 따라서 다음 두 가지를 지킨다.
+시나리오 = 실제 수요 파일의 서로 겹치지 않는 기간 하나를 '라운드 하나'로 본 것이다
+(`round_scenarios`). 라운드처럼 초기재고로 시작해 종료일에 끝나므로, 지표인 Balance가
+게임 점수와 같은 정의다. 수요 재생은 결정론적이라 seed 대신 기간을 바꿔 반복한다.
 
-1. Common Random Numbers (CRN)
-   replication r에는 모든 정책이 동일한 seed를 쓴다. 그래야 정책 A와 B의 Balance 차이가
-   수요 경로 운이 아니라 정책 차이에서 온 것이라고 말할 수 있다.
-
-2. 대응표본 비교 (paired comparison)
-   정책 간 비교는 평균 차이가 아니라 replication별 차이 d_r = Balance_A(r) - Balance_B(r)의
-   분포로 본다. CRN 덕분에 분산이 크게 줄어 훨씬 적은 replication으로 결론이 난다.
+정책 비교는 평균이 아니라 시나리오별 차이 d_s = Balance_A(s) - Balance_B(s)로 본다
+(Common Random Numbers: 모든 정책이 같은 수요 경로를 겪는다). `compare()`의 t = 평균 / 표준오차.
 """
 
 from __future__ import annotations
 
 import datetime as dt
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Sequence
+from typing import Callable, Dict, List, Mapping, Sequence
 
 import numpy as np
 
 from .config import LOT_SIZE
-from .engine import PolicySet, SimResult, Simulator
+from .engine import SimResult, Simulator
+
+
+@dataclass(frozen=True)
+class Scenario:
+    """라운드 하나: start(일요일)부터 end까지, end가 라운드 종료일이다."""
+
+    name: str
+    start: dt.date
+    end: dt.date
+
+
+def round_scenarios(first_start: dt.date, last_day: dt.date, weeks: int = 5) -> List[Scenario]:
+    """first_start부터 weeks주짜리 겹치지 않는 라운드를 last_day 안에 들어가는 만큼 만든다."""
+    out = []
+    start = first_start
+    while start + dt.timedelta(weeks=weeks, days=-1) <= last_day:
+        end = start + dt.timedelta(weeks=weeks, days=-1)
+        out.append(Scenario(f"{start:%y%m%d}", start, end))
+        start = end + dt.timedelta(days=1)
+    return out
 
 
 @dataclass
@@ -33,49 +51,59 @@ class ExperimentResult:
         return pd.DataFrame(self.rows)
 
     def compare(self, baseline: str, metric: str = "balance"):
-        """CRN 대응표본 비교. baseline 대비 각 정책의 (평균 차이, 표준오차, 승률)."""
+        """baseline 대비 각 정책의 시나리오별 짝비교 (평균 차이, 표준오차, t, 승률)."""
         import pandas as pd
 
-        df = self.to_frame()
-        pivot = df.pivot_table(index="seed", columns="label", values=metric)
+        pivot = self.to_frame().pivot_table(index="scenario", columns="label", values=metric)
         out = []
         for label in pivot.columns:
             if label == baseline:
                 continue
             diff = (pivot[label] - pivot[baseline]).dropna()
+            se = float(diff.std(ddof=1) / np.sqrt(len(diff))) if len(diff) > 1 else float("nan")
+            mean = float(diff.mean())
             out.append({
                 "label": label,
-                "mean_diff": float(diff.mean()),
-                "se": float(diff.std(ddof=1) / np.sqrt(len(diff))) if len(diff) > 1 else float("nan"),
+                "mean_diff": mean,
+                "se": se,
+                "t": mean / se if se and se > 0 else float("nan"),
                 "win_rate": float((diff > 0).mean()),
                 "n": int(len(diff)),
             })
         return pd.DataFrame(out).sort_values("mean_diff", ascending=False)
 
 
+def _run_one(task) -> dict:
+    build_simulator, label, policy, sc = task
+    sim: Simulator = build_simulator(policy, sc)
+    res: SimResult = sim.run(sc.start, sc.end, backfill_current_week=True)
+    row = res.summary.as_row()
+    row.update({"label": label, "scenario": sc.name})
+    return row
+
+
 def run_experiment(
-    build_simulator: Callable[[PolicySet], Simulator],
-    policies: Sequence[PolicySet],
-    start: dt.date,
-    end: dt.date,
-    n_replications: int = 30,
-    base_seed: int = 1000,
-    warmup_days: int = 14,
+    build_simulator: Callable[[object, Scenario], Simulator],
+    policies: Mapping[str, object],
+    scenarios: Sequence[Scenario],
+    workers: int = 1,
 ) -> ExperimentResult:
-    result = ExperimentResult()
-    for r in range(n_replications):
-        seed = base_seed + r          # CRN: 정책마다 같은 seed 재사용
-        for pol in policies:
-            sim = build_simulator(pol)
-            res: SimResult = sim.run(start, end, seed=seed, warmup_days=warmup_days)
-            row = res.summary.as_row()
-            row.update({"label": pol.label, "seed": seed, "replication": r})
-            result.rows.append(row)
-    return result
+    """policies: {라벨: build_simulator(정책, 시나리오)에 넘길 값}. workers > 1이면 프로세스 병렬.
+
+    build_simulator는 시나리오 종료일을 라운드 종료일로 둔 calendar로 시뮬레이터를 만들어야 한다.
+    병렬 실행 시 build_simulator와 정책 값은 pickle 가능해야 한다 (모듈 최상위 함수, 일반 객체).
+    """
+    tasks = [(build_simulator, label, pol, sc) for label, pol in policies.items() for sc in scenarios]
+    if workers <= 1:
+        rows = [_run_one(t) for t in tasks]
+    else:
+        with ProcessPoolExecutor(max_workers=workers) as ex:
+            rows = list(ex.map(_run_one, tasks, chunksize=1))
+    return ExperimentResult(rows=rows)
 
 
 def cost_decomposition(result: ExperimentResult):
-    """정책별 비용 항목 분해. '어디서 돈이 새는가'를 먼저 보고 개선 순서를 정한다."""
+    """정책별 비용 항목 분해 (시나리오 평균). '어디서 돈이 새는가'를 먼저 보고 개선 순서를 정한다."""
     df = result.to_frame()
     cols = ["revenue", "production_cost", "inventory_cost", "material_cost", "balance"]
     return df.groupby("label")[cols].mean().sort_values("balance", ascending=False)

@@ -88,10 +88,13 @@ class MarginalProfitOptimizer(DiscountPolicy):
     name = "marginal"
 
     def __init__(self, grid: Sequence[float] = tuple(np.arange(0.0, 0.31, 0.01)),
-                 lookahead_days: int = 3, required_cover: float = 1.0):
+                 lookahead_days: int = 3, required_cover: float = 1.0,
+                 protect_until_receipt: bool = False):
         self.grid = list(grid)
         self.lookahead_days = lookahead_days
         self.required_cover = required_cover
+        # True면 다음 생산 입고 전날까지의 수요 전부를 필수 버퍼로 본다 (배치로 미리 만든 재고 보호)
+        self.protect_until_receipt = protect_until_receipt
 
     def _carry_days(self, excess: float, date: dt.date,
                     demand_forecast: Dict[dt.date, float],
@@ -122,6 +125,13 @@ class MarginalProfitOptimizer(DiscountPolicy):
         # 익일 수요분은 규칙상 반드시 재고로 들고 있어야 한다 -> 할인 대상에서 제외
         next_day = date + dt.timedelta(days=1)
         buffer_need = demand_forecast.get(next_day, base) * self.required_cover
+        if self.protect_until_receipt and scheduled_receipts is not None:
+            d = next_day
+            for _ in range(14):
+                if scheduled_receipts.get(d, 0.0) > 0:
+                    break
+                buffer_need += demand_forecast.get(d + dt.timedelta(days=1), 0.0)
+                d += dt.timedelta(days=1)
         excess = inventory - base - buffer_need
         if excess <= 0:
             return 0.0

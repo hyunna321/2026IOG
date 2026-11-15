@@ -119,8 +119,9 @@ class DualSourcingPolicy(MaterialPolicy):
     name = "dual"
 
     def __init__(self, z_normal: float = 1.65, z_urgent: float = 2.33,
-                 stockout_cost: int = 250, bom_qty: int = 2, slack_days: int = 1):
-        self.base = SsPolicy(z=z_normal)
+                 stockout_cost: int = 250, bom_qty: int = 2, slack_days: int = 1,
+                 cover_days: Optional[int] = None):
+        self.base = SsPolicy(z=z_normal, cover_days=cover_days)
         self.z_urgent = z_urgent
         self.stockout_cost = stockout_cost
         self.bom_qty = bom_qty
