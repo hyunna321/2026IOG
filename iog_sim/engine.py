@@ -65,6 +65,10 @@ class PolicySet:
     # 주간계획 때 확정 구간 뒤로 더 내다보는 날 수 (rolling horizon). 이 구간은 배치 묶음
     # 판단에만 쓰고 생산은 확정하지 않는다. 0이면 주 경계에서 계획이 끊긴다.
     lookahead_days: int = 7
+    # 자재 소요를 볼 때 아직 제출 전인 다음 주를 '오늘 예측으로 미리 세운 가계획'으로 채운다.
+    # False면 직전 주 같은 요일 Lot을 복사한다(project_lots). DP가 배치를 요일 사이로 옮기면
+    # 복사본이 크게 빗나가(P1 월요일 Lot 차이 표준편차 약 100) M1·M3를 토요일 계획 전에 못 맞춘다.
+    tentative_next_week: bool = False
 
 
 @dataclass
@@ -319,7 +323,13 @@ class Simulator:
         if state.planned_through is not None:
             plan_lots = {day: {c: o.n_lots for c, o in by.items()}
                          for day, by in state.production_plan.items()}
-            gross = explode_bom(project_lots(plan_lots, state.planned_through, live,
+            through = state.planned_through
+            if self.pol.tentative_next_week and live and through < live[-1]:
+                tentative, t_end = self._tentative_next_week(state, d)
+                for day, by in tentative.items():
+                    plan_lots[day] = by
+                through = max(through, t_end)
+            gross = explode_bom(project_lots(plan_lots, through, live,
                                              self._producing()), self.cfg.bom)
             for day, by_mat in gross.items():
                 for mat, qty in by_mat.items():
@@ -336,6 +346,43 @@ class Simulator:
                 for mat, per_unit in self.cfg.bom[code].items():
                     out[mat][day] += val * per_unit
         return out
+
+    def _tentative_next_week(self, state: WorldState, d: dt.date):
+        """확정 구간 다음 주(일~토)를 오늘(d) 기준 예측으로 미리 세운 가계획 {날짜: {제품: Lot}}과 그 끝날.
+
+        토요일 실제 계획과 같은 `_plan_week`를 복사한 상태에 돌린다. 시작 재고는 지금 완제품 재고에
+        확정 구간의 남은 생산을 더하고 같은 예측 수요를 빼 굴린 값이다. 실제 상태는 건드리지 않는다.
+        """
+        pt = state.planned_through
+        if pt < d:
+            return {}, pt
+        week = list(self.cal.next_week(pt))
+        lag = dt.timedelta(days=self._lag)
+        proj: Dict[str, int] = {}
+        rest = self.cal.date_range(d + dt.timedelta(days=1), pt) if pt > d else []
+        for code, spec in self.cfg.products.items():
+            inv = float(state.fg_inventory.get(code, 0))
+            history = self.demand.history_until(d, code)
+            sell_days = self.cal.demand_days(rest, spec.market_days_only)
+            fc = {}
+            if sell_days and len(history) >= 10:
+                f = self.pol.forecaster[code].fit_predict(history, sell_days, d)
+                fc = {k: max(0.0, float(v)) for k, v in zip(f.dates, f.mu)}
+            for day in rest:
+                inv += state.planned_lots(day - lag, code) * LOT_SIZE
+                inv = max(0.0, inv - fc.get(day, 0.0))
+            proj[code] = int(inv)
+        tmp = WorldState(
+            fg_inventory=proj,
+            production_plan={k: dict(v) for k, v in state.production_plan.items()},
+            forecast_cache={k: dict(v) for k, v in state.forecast_cache.items()},
+            forecast_sigma=dict(state.forecast_sigma),
+            planned_through=pt,
+        )
+        self._plan_week(tmp, d, week)
+        lots = {day: {c: o.n_lots for c, o in tmp.production_plan.get(day, {}).items()}
+                for day in week}
+        return lots, week[-1]
 
     def _producing(self) -> Dict[str, Callable[[dt.date], bool]]:
         """제품별 '그날 생산이 일어날 수 있는가'. 개장일 수요만 있는 P1은 판매 가능일이 개장일인 날만."""
@@ -369,15 +416,25 @@ class Simulator:
             decisions = pol.decide(d, state, spec, req[mat], self._material_sigma(state, mat))
             orders = to_purchase_orders(decisions, d, self.cfg.materials)
             if self._round_end is not None:
-                orders = self._trim_for_round_end(state, mat, orders, req[mat], horizon_end)
+                orders = self._trim_for_round_end(state, mat, orders, req[mat], horizon_end,
+                                                  plan_error=self._plan_error_of(pol))
             if not orders:
                 continue
             state.open_orders.extend(orders)
             # 발주일에는 지출하지 않는다. 구매비·주문비는 입고일의 _close_day에서 기록한다.
         return result
 
+    @staticmethod
+    def _plan_error_of(pol: MaterialPolicy) -> float:
+        """라운드 종료 trim에서 확정 전 소요에 남길 여유 비율 (정책 또는 이중조달의 일반 경로)."""
+        for p in (pol, getattr(pol, "base", None)):
+            if p is not None and getattr(p, "round_end_plan_error", 0.0):
+                return float(p.round_end_plan_error)
+        return 0.0
+
     def _trim_for_round_end(self, state: WorldState, mat: str, orders: List[PurchaseOrder],
-                            req: Dict[dt.date, float], horizon_end: dt.date) -> List[PurchaseOrder]:
+                            req: Dict[dt.date, float], horizon_end: dt.date,
+                            plan_error: float = 0.0) -> List[PurchaseOrder]:
         """라운드 안에 쓸 수 없는 발주를 버린다.
 
         - 마지막 유효 생산일(종료일 - lag) 뒤에 도착하는 주문은 통째로 뺀다.
@@ -385,13 +442,18 @@ class Simulator:
           당일 판매 불가(lag=1)라면 종료일 당일 도착분은 라운드 안에 팔 수 없어 뺀다.
         - 종료일이 소요 시계 안에 들어오면, 남은 소요 - 재고포지션을 넘는 수량을 깎는다.
           (s,S)·EOQ는 운영이 계속된다고 보고 S까지 채우므로 그대로 두면 남는 자재에 구매비·주문비를 낸다.
+        - plan_error > 0이면 아직 확정되지 않은 날의 소요에 그 비율만큼 여유를 남긴다. 추정 소요로 딱 맞춰
+          자르면 토요일 확정 계획이 조금만 커져도 마지막 금요일 배치가 자재 부족으로 잘린다.
         """
         last_prod = self._round_end - dt.timedelta(days=self._lag)   # 마지막 유효 생산일
         kept = [o for o in orders if o.arrival_date <= last_prod]
         if self._round_end > horizon_end:
             return kept
+        pt = state.planned_through
+        unlocked = sum(q for day, q in req.items()
+                       if day <= last_prod and (pt is None or day > pt))
         room = sum(q for day, q in req.items() if day <= last_prod) \
-            - state.inventory_position(mat)
+            + plan_error * unlocked - state.inventory_position(mat)
         trimmed = []
         for o in kept:
             qty = int(min(o.qty, max(0.0, room)))

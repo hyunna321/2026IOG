@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import math
 
 import numpy as np
 import pytest
@@ -913,12 +914,13 @@ def test_ss_lot_scale_shrinks_only_the_cycle_quantity():
     assert small == round(s + 0.75 * q)
 
 
-def test_report_policy_orders_m1_m3_at_075_eoq_and_m2_at_eoq():
-    """2026-11-13 재검증: M1·M3만 EOQ x 0.75, M2(주문비 3M)는 EOQ 그대로."""
-    from iog_sim.examples.current_state_report import POLICY
-    assert POLICY.material["M1"].lot_scale == 0.75
-    assert POLICY.material["M3"].lot_scale == 0.75
-    assert POLICY.material["M2"].base.lot_scale == 1.0
+def test_eoq_policy_orders_m1_m3_at_075_eoq_and_m2_at_eoq():
+    """2026-11-13 재검증: (s,S) 정책은 M1·M3만 EOQ x 0.75, M2(주문비 3M)는 EOQ 그대로."""
+    from iog_sim.examples.demo_run import eoq_materials
+    mat = eoq_materials()
+    assert mat["M1"].lot_scale == 0.75
+    assert mat["M3"].lot_scale == 0.75
+    assert mat["M2"].base.lot_scale == 1.0
 
 
 def test_report_policy_m2_urgent_safety_factor_is_165():
@@ -926,6 +928,115 @@ def test_report_policy_m2_urgent_safety_factor_is_165():
     from iog_sim.examples.current_state_report import POLICY
     assert POLICY.material["M2"].z_urgent == 1.65
     assert POLICY.material["M2"].base.z == 1.65
+
+
+def test_report_policy_uses_weekly_aligned_material():
+    """2026-11-16 채택: 자재는 주간 정렬(WW + 확정 주 버퍼 0) + 다음 주 가계획. 생산·할인 정책은 그대로."""
+    from iog_sim.examples.current_state_report import POLICY
+    from iog_sim.material.policy import WeeklyAlignedPolicy
+    from iog_sim.production.safety_stock import CumulativeModelSigma
+    assert POLICY.tentative_next_week
+    assert isinstance(POLICY.material["M1"], WeeklyAlignedPolicy)
+    assert isinstance(POLICY.material["M3"], WeeklyAlignedPolicy)
+    assert isinstance(POLICY.material["M2"].base, WeeklyAlignedPolicy)
+    assert POLICY.material["M2"].lock_aware
+    assert (POLICY.material["M1"].plan_error, POLICY.material["M1"].round_end_plan_error,
+            POLICY.material["M1"].trigger_frac) == (0.15, 0.05, 0.5)
+    assert isinstance(POLICY.safety_stock, CumulativeModelSigma)
+
+
+def _weekly_req(start, pattern):
+    """start+1부터 pattern(요일 -> 소요)을 3주 반복."""
+    return {start + dt.timedelta(days=i): float(pattern[(start + dt.timedelta(days=i)).weekday()])
+            for i in range(1, 22)}
+
+
+def test_weekly_aligned_no_safety_stock_on_locked_days():
+    """확정 구간 안의 날은 버퍼 0: 확정 주 소요만큼만 사고, 같은 조건에서 계획 밖이면 버퍼만큼 더 산다."""
+    from iog_sim.config import SimConfig
+    from iog_sim.material.policy import WeeklyAlignedPolicy, safety_stock
+    from iog_sim.state import WorldState
+    spec = SimConfig().materials["M1"]                       # LT 3, 주문비 1M, 보관비 1
+    today = dt.date(2026, 11, 13)                            # 금 -> 월 도착
+    # 월요일에만 200,000 (주 1회). 7일 보관비 1.4M > 주문비 1M이라 주문은 그 주 월요일분만 덮는다.
+    req = _weekly_req(today, {0: 200_000, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0})
+    pol = WeeklyAlignedPolicy(z=1.65)
+    locked = WorldState(mat_inventory={"M1": 0}, planned_through=dt.date(2026, 12, 31))
+    free = WorldState(mat_inventory={"M1": 0}, planned_through=dt.date(2026, 11, 14))
+    assert pol.decide(today, locked, spec, req, 10_000)[0].qty == 200_000      # 버퍼 없음
+    assert pol.decide(today, free, spec, req, 10_000)[0].qty == \
+        200_000 + math.ceil(safety_stock(10_000, 3, 1.65))
+
+
+def test_weekly_aligned_lot_ends_at_weekend_boundary():
+    """보관비 2원 M3: 금요일 배치 뒤 주말(소요 0)을 넘겨 다음 주까지 덮지 않는다 (EOQ는 일 평균이라 넘긴다)."""
+    from iog_sim.config import SimConfig
+    from iog_sim.material.policy import WeeklyAlignedPolicy
+    from iog_sim.state import WorldState
+    spec = SimConfig().materials["M3"]                       # LT 5, 주문비 2M, 보관비 2
+    today = dt.date(2026, 11, 11)                            # 수 -> 월 11-16 도착
+    req = _weekly_req(today, {0: 70_000, 1: 70_000, 2: 70_000, 3: 70_000, 4: 210_000, 5: 0, 6: 0})
+    state = WorldState(mat_inventory={"M3": 0}, planned_through=dt.date(2026, 12, 31))
+    dec = WeeklyAlignedPolicy().decide(today, state, spec, req, 0.0)
+    assert len(dec) == 1
+    # 소요일 단위로 끊기고, 다음 주 월요일 소요까지 주말을 넘겨 들고 가지 않는다 (한 주 = 490,000)
+    assert dec[0].qty % 70_000 == 0 and dec[0].qty <= 490_000
+
+
+def test_weekly_aligned_trigger_frac_skips_small_top_up():
+    """버퍼를 조금 파고드는 정도면 trigger_frac 0.5에선 발주하지 않고, 1.0에선 보충 주문이 나간다."""
+    from iog_sim.config import SimConfig
+    from iog_sim.material.policy import WeeklyAlignedPolicy
+    from iog_sim.state import WorldState
+    spec = SimConfig().materials["M1"]
+    today = dt.date(2026, 11, 13)
+    req = _weekly_req(today, {0: 200_000, 1: 200_000, 2: 200_000, 3: 200_000, 4: 200_000, 5: 0, 6: 0})
+    # 계획 밖, 버퍼 = 0.15 x 누적 추정 소요. 월요일 버퍼 30,000 중 10,000만 파고드는 재고
+    state = WorldState(mat_inventory={"M1": 220_000}, planned_through=today)
+    assert WeeklyAlignedPolicy(plan_error=0.15, trigger_frac=1.0).decide(today, state, spec, req, 0.0)
+    assert not WeeklyAlignedPolicy(plan_error=0.15, trigger_frac=0.5).decide(today, state, spec, req, 0.0)
+
+
+def test_lock_aware_urgent_ignores_buffer_on_locked_days():
+    """확정 주 재고가 0 근처여도 실제 부족이 아니면 긴급을 내지 않는다 (lock_aware). 기존 방식은 버퍼 미달로 낸다."""
+    from iog_sim.config import MATERIALS
+    from iog_sim.material.policy import DualSourcingPolicy, WeeklyAlignedPolicy
+    from iog_sim.state import WorldState
+    spec, today = MATERIALS["M2"], dt.date(2026, 11, 16)
+    req = {today + dt.timedelta(days=i): 500_000.0 for i in range(1, 22)}
+    state = WorldState(mat_inventory={"M2": 1_510_000}, planned_through=dt.date(2026, 11, 21))
+    sigma = 50_000
+    aware = DualSourcingPolicy(z_urgent=1.65, base=WeeklyAlignedPolicy(), lock_aware=True)
+    old = DualSourcingPolicy(z_urgent=1.65, base=WeeklyAlignedPolicy(), lock_aware=False)
+    assert not [d for d in aware.decide(today, state, spec, req, sigma) if d.option == "urgent"]
+    assert [d for d in old.decide(today, state, spec, req, sigma) if d.option == "urgent"]
+
+
+def test_tentative_next_week_fills_requirements_without_touching_state():
+    """가계획은 다음 주 소요를 채우되 실제 상태(생산계획·확정일·예측)는 바꾸지 않는다."""
+    from iog_sim.examples.current_state_report import POLICY
+    from iog_sim.examples.demo_run import build
+    from iog_sim.state import ProductionOrder, WorldState
+    sim = build(POLICY)
+    d = dt.date(2026, 11, 11)                                 # 수, 이번 주 토 11-14까지 확정
+    week = sim.cal.date_range(dt.date(2026, 11, 8), dt.date(2026, 11, 14))
+    state = WorldState(fg_inventory={"P1": 0, "P2": 0}, mat_inventory={"M1": 0, "M2": 0, "M3": 0},
+                       planned_through=week[-1])
+    state.forecast_cache = {"P1": {}, "P2": {}}
+    for day in week:
+        state.production_plan[day] = {"P2": ProductionOrder("P2", day, 70)}
+        if day.weekday() < 5:
+            state.production_plan[day]["P1"] = ProductionOrder("P1", day, 200)
+    snap = lambda: ({k: {c: o.n_lots for c, o in v.items()} for k, v in state.production_plan.items()},  # noqa: E731
+                    state.planned_through, dict(state.forecast_cache["P1"]), dict(state.fg_inventory))
+    before = snap()
+    lots, end = sim._tentative_next_week(state, d)
+    assert end == dt.date(2026, 11, 21)
+    assert sum(by.get("P1", 0) for by in lots.values()) > 0
+    assert snap() == before
+    req = sim._material_requirements(state, d)["M1"]
+    assert sum(q for day, q in req.items() if dt.date(2026, 11, 15) <= day <= dt.date(2026, 11, 21)) \
+        == 1000 * sum(by.get("P1", 0) for by in lots.values())
 
 
 def test_duplicate_date_keys_stop_the_report():

@@ -20,7 +20,7 @@ from iog_sim.config import SimConfig
 from iog_sim.demand.forecaster import SimpleExponentialSmoothingForecaster
 from iog_sim.demand.generator import HistoricalReplay, load_historical_replay
 from iog_sim.engine import PolicySet, Simulator
-from iog_sim.material.policy import DualSourcingPolicy, SsPolicy
+from iog_sim.material.policy import DualSourcingPolicy, SsPolicy, WeeklyAlignedPolicy
 from iog_sim.production.lotsizing import DynamicLotSizing, FixedBatchDays
 from iog_sim.production.safety_stock import CumulativeModelSigma, EndOfHorizon, SafetyStockRule
 from iog_sim.production.sequencing import (BestOf, DiskCached, IteratedGreedy, LTWK, NEH, SPT,
@@ -110,23 +110,54 @@ M13_LOT_SCALE = 0.75
 # M2 긴급 판단용 안전계수 (2026-11-13 재검증: 2.33 -> 1.65 +0.7M/라운드, 31라운드 중 진 적 없음)
 M2_URGENT_Z = 1.65
 
+# 주간 정렬 자재 정책 (2026-11-16 채택, WeeklyAlignedPolicy + 다음 주 가계획).
+# 13라운드 백테스트(현행 운영 정책에서 자재만 교체): 평균 +11.3M/라운드 (se 2.5M, 11승 2패, 최악 -7.8M),
+# 자재부족 생산일 1.00 = 현행 1.00, 긴급발주 1.00회 < 현행 1.46회 (발생 라운드 5 < 7), 재고유지비 -19M.
+#   PLAN_ERROR 0.15: 가계획 vs 토요일 확정 계획의 누적 자재 소요 차이 p95~p99. 0.10이면 부족일이 늘었다.
+#   ROUND_END_PLAN_ERROR 0.05: 종료 직전 trim 여유. 0이면 마지막 금요일 부족, 0.15면 남는 자재로 -9M.
+#   TRIGGER_FRAC 0.5: 버퍼 절반 아래에서만 발주. 1.0이면 가계획이 조금 커질 때마다 소량 보충 주문(-9M).
+PLAN_ERROR = 0.15
+ROUND_END_PLAN_ERROR = 0.05
+TRIGGER_FRAC = 0.5
+
+
+def eoq_materials(z: float = 1.65) -> dict:
+    """(s,S)+EOQ (2026-11-15까지 운영). 안전재고를 확정 주에도 두고, 발주량은 일 평균 EOQ."""
+    return {
+        "M1": SsPolicy(z=z, lot_scale=M13_LOT_SCALE),
+        "M2": DualSourcingPolicy(z_normal=z, z_urgent=M2_URGENT_Z),   # 주문비 3M이라 EOQ 그대로가 최적
+        "M3": SsPolicy(z=z, lot_scale=M13_LOT_SCALE),
+    }
+
+
+def weekly_materials(z: float = 1.65) -> dict:
+    """확정 주 안전재고 0 + 계획 수정 버퍼 + 일별 소요 Wagner-Whitin (주간 주기 정렬). M2 긴급 판단도
+    확정 주에는 버퍼 없이 '실제 부족'일 때만 본다. `tentative_next_week=True`와 같이 써야 한다."""
+    def mk():
+        return WeeklyAlignedPolicy(z=z, plan_error=PLAN_ERROR,
+                                   round_end_plan_error=ROUND_END_PLAN_ERROR,
+                                   trigger_frac=TRIGGER_FRAC)
+    return {
+        "M1": mk(),
+        "M2": DualSourcingPolicy(z_normal=z, z_urgent=M2_URGENT_Z, base=mk(), lock_aware=True),
+        "M3": mk(),
+    }
+
 
 def base_policy(label: str, lot_sizing, discount, z: float = 1.65,
-                safety_stock: SafetyStockRule = EndOfHorizon(0.95)) -> PolicySet:
+                safety_stock: SafetyStockRule = EndOfHorizon(0.95),
+                weekly_material: bool = False) -> PolicySet:
     return PolicySet(
         forecaster={"P1": SimpleExponentialSmoothingForecaster(),
                     "P2": SimpleExponentialSmoothingForecaster()},
         lot_sizing=lot_sizing,
         sequencer=SEQUENCER,
         planning_sequencer=PLANNING_SEQUENCER,
-        material={
-            "M1": SsPolicy(z=z, lot_scale=M13_LOT_SCALE),
-            "M2": DualSourcingPolicy(z_normal=z, z_urgent=M2_URGENT_Z),   # 주문비 3M이라 EOQ 그대로가 최적
-            "M3": SsPolicy(z=z, lot_scale=M13_LOT_SCALE),
-        },
+        material=weekly_materials(z) if weekly_material else eoq_materials(z),
         discount=discount,
         safety_stock=safety_stock,
         label=label,
+        tentative_next_week=weekly_material,
     )
 
 
@@ -140,6 +171,9 @@ POLICIES = [
     # 11-15 주 몬테카를로에서 품절확률 73% -> 45%, 순비용 -3M.
     base_policy("DP+한계이익할인+누적버퍼0.75", DynamicLotSizing(), MarginalProfitOptimizer(),
                 safety_stock=CumulativeModelSigma(0.75)),
+    # 운영 정책 (2026-11-16~). 생산·할인·완제품 버퍼는 위와 같고 자재만 주간 정렬로 바꿨다.
+    base_policy("DP+한계이익할인+누적버퍼0.75+주간정렬자재", DynamicLotSizing(), MarginalProfitOptimizer(),
+                safety_stock=CumulativeModelSigma(0.75), weekly_material=True),
 ]
 
 

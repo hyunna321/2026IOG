@@ -4,6 +4,7 @@ from .policy import (  # noqa: F401
     MaterialPolicy,
     SsPolicy,
     DualSourcingPolicy,
+    WeeklyAlignedPolicy,
     eoq,
     safety_stock,
     to_purchase_orders,

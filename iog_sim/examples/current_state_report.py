@@ -35,14 +35,14 @@ SNAPSHOT_PATH = Path(__file__).resolve().parent / "daily_snapshot.json"
 # ▼▼▼ 입력 ① 매일 갱신 ▼▼▼  (어제 20시 틱 이후 화면 값)
 # ############################################################################
 
-TODAY = dt.date(2026, 11, 15)
+TODAY = dt.date(2026, 11, 16)
 
 # [Material 화면] Material inventory in/out summary
 #   자재: (Total in, Total out, Current level).  Current level이 시뮬레이션 시작 재고가 된다.
 MATERIAL_INVENTORY_INOUT = {
     "M1": (2_510_278, 2_065_000, 445_278),
-    "M2": (7_226_500, 6_286_000, 940_500),
-    "M3": (1_511_855, 1_078_000, 433_855),
+    "M2": (7_226_500, 6_378_000, 848_500),
+    "M3": (1_511_855, 1_124_000, 387_855),
 }
 
 # [Material 화면] Material plans
@@ -50,10 +50,11 @@ MATERIAL_INVENTORY_INOUT = {
 #   입고일이 None인 행만 입고예정으로 쓴다. 빠뜨리면 같은 물량을 한 번 더 발주한다.
 #   도착 예정일은 발주일 + 리드타임(config)으로 계산한다.
 MATERIAL_PLANS = [
-    ("M3", "normal", 515_188, dt.date(2026, 11, 8), dt.date(2026, 11, 13)),
+    ("M1", "normal", 650_936, dt.date(2026, 11, 9), dt.date(2026, 11, 12)),
     ("M2", "normal", 1_820_185, dt.date(2026, 11, 9), None),
     ("M2", "normal", 1_887_845, dt.date(2026, 11, 12), None),
     ("M1", "normal", 401_202, dt.date(2026, 11, 14), None),
+    ("M3", "normal", 440_848, dt.date(2026, 11, 15), None),
 ]
 
 
@@ -61,8 +62,10 @@ MATERIAL_PLANS = [
 #   제품: (Total in, Total out, Current level).  Current level이 시뮬레이션 시작 재고가 된다.
 #   모르는 칸은 None (검산만 건너뛴다).
 SALES_INVENTORY_INOUT = {
+    # 11-16: Sales 화면 미입력. P1은 일요일 휴장이라 변동 없음. P2는 in = M3 out 1,124,000(BOM 1),
+    # out = 1,050,317 + 11-15 수요 64,367(1등팀 Sales 화면, 수요는 팀 공통으로 확인됨) -> 화면 값으로 확인 필요
     "P1": (2_065_000, 2_054_000, 11_000),
-    "P2": (1_078_000, 1_050_317, 27_683),
+    "P2": (1_124_000, 1_114_684, 9_316),
 }
 
 # [Ledger 화면] Balance. expected_balance 열의 기준선일 뿐 발주·할인·계획에는 영향이 없다.
@@ -91,6 +94,7 @@ OBSERVED_DEMAND: Dict[str, Dict[dt.date, int]] = {
     "P1": {},
     "P2": {
         dt.date(2026, 11, 14): 67_363,    # 1,050,317 - 982,954 (재고 95,046이라 품절 없음)
+        dt.date(2026, 11, 15): 64_367,    # 1등팀 Sales 화면 11-15 판매(재고 있어 품절 없음 = 수요)
     },
 }
 # ############################################################################
@@ -106,7 +110,7 @@ AUTO_CONFIRM = False
 # 하루 수요가 직전 값보다 이 비율 넘게 변하면 OBSERVED_DEMAND 오타를 의심한다.
 DEMAND_JUMP = 0.15
 
-POLICY = next(p for p in POLICIES if p.label == "DP+한계이익할인+누적버퍼0.75")
+POLICY = next(p for p in POLICIES if p.label == "DP+한계이익할인+누적버퍼0.75+주간정렬자재")
 
 
 def in_transit_orders(cfg: SimConfig, today: dt.date) -> List[PurchaseOrder]:
