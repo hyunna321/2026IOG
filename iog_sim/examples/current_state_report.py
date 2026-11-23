@@ -35,7 +35,7 @@ SNAPSHOT_PATH = Path(__file__).resolve().parent / "daily_snapshot.json"
 # ▼▼▼ 입력 ① 매일 갱신 ▼▼▼  (어제 20시 틱 이후 화면 값)
 # ############################################################################
 
-TODAY = dt.date(2026, 11, 22)
+TODAY = dt.date(2026, 11, 23)
 
 # [Material 화면] Material inventory in/out summary
 #   자재: (Total in, Total out, Current level).  Current level이 시뮬레이션 시작 재고가 된다.
@@ -58,6 +58,7 @@ MATERIAL_PLANS = [
     ("M1", "normal", 392_106, dt.date(2026, 11, 17), dt.date(2026, 11, 20)),
     ("M2", "normal", 1_766_415, dt.date(2026, 11, 17), None),
     ("M1", "normal", 690_712, dt.date(2026, 11, 21), None),
+    ("M3", "normal", 86_412, dt.date(2026, 11, 22), None),
 ]
 
 
@@ -66,11 +67,11 @@ MATERIAL_PLANS = [
 #   모르는 칸은 None (검산만 건너뛴다).
 SALES_INVENTORY_INOUT = {
     "P1": (3_120_000, 3_015_200, 104_800),
-    "P2": (1_615_000, 1_500_153, 114_847),
+    "P2": (1_615_000, 1_559_213, 55_787),
 }
 
 # [Ledger 화면] Balance. expected_balance 열의 기준선일 뿐 발주·할인·계획에는 영향이 없다.
-CURRENT_BALANCE = 177_170_381
+CURRENT_BALANCE = 190_700_249
 
 # ############################################################################
 # ▼▼▼ 입력 ② 토요일마다 갱신 ▼▼▼  (제출해서 확정된 이번 주 Production 계획)
@@ -93,9 +94,13 @@ LOCKED_PRODUCTION_PLAN = {
 # demand_data_*_20261121.xls가 P1 11-20, P2 11-21(오늘, 16시 공시)까지 담고 있다.
 # P2 오늘 값을 여기 적어야 예측 원점이 오늘이 된다 (P1은 토요일이라 오늘 수요 없음).
 OBSERVED_DEMAND: Dict[str, Dict[dt.date, int]] = {
-    "P1": {},
+    "P1": {
+        dt.date(2026, 11, 23): 177_000, 
+    },
     "P2": {
-        dt.date(2026, 11, 21): 58_239,    # demand_data_P2_20261121.xls 첫 행
+        dt.date(2026, 11, 21): 58_239,
+        dt.date(2026, 11, 22): 59_060,
+        dt.date(2026, 11, 23): 61_441,    # demand_data_P2_20261121.xls 첫 행
     },
 }
 # ############################################################################
