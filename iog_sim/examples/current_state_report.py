@@ -35,14 +35,14 @@ SNAPSHOT_PATH = Path(__file__).resolve().parent / "daily_snapshot.json"
 # ▼▼▼ 입력 ① 매일 갱신 ▼▼▼  (어제 20시 틱 이후 화면 값)
 # ############################################################################
 
-TODAY = dt.date(2026, 11, 24)
+TODAY = dt.date(2026, 11, 25)
 
 # [Material 화면] Material inventory in/out summary
 #   자재: (Total in, Total out, Current level).  Current level이 시뮬레이션 시작 재고가 된다.
 MATERIAL_INVENTORY_INOUT = {
-    "M1": (3_303_586, 3_206_000, 97_586),
-    "M2": (10_934_530, 9_642_000, 1_292_530),
-    "M3": (1_952_703, 1_615_000, 337_703),
+    "M1": (3_994_298, 3_395_000, 599_298),
+    "M2": (10_934_530, 10_132_000, 802_530),
+    "M3": (1_952_703, 1_671_000, 281_703),
 }
 
 # [Material 화면] Material plans
@@ -57,22 +57,22 @@ MATERIAL_PLANS = [
     ("M3", "normal", 440_848, dt.date(2026, 11, 15), dt.date(2026, 11, 20)),
     ("M1", "normal", 392_106, dt.date(2026, 11, 17), dt.date(2026, 11, 20)),
     ("M2", "normal", 1_766_415, dt.date(2026, 11, 17), None),
-    ("M1", "normal", 690_712, dt.date(2026, 11, 21), None),
+    ("M1", "normal", 690_712, dt.date(2026, 11, 21), dt.date(2026, 11, 24)),
     ("M3", "normal", 86_412, dt.date(2026, 11, 22), None),
     ("M2", "normal", 1_631_055, dt.date(2026, 11, 23), None),
+    ("M3", "normal", 261_785, dt.date(2026, 11, 24), None),
 ]
-
 
 # [Sales 화면] Sales inventory in/out summary
 #   제품: (Total in, Total out, Current level).  Current level이 시뮬레이션 시작 재고가 된다.
 #   모르는 칸은 None (검산만 건너뛴다).
 SALES_INVENTORY_INOUT = {
-    "P1": (3_206_000, 3_192_200, 13_800),
-    "P2": (1_615_000, 1_615_000, 0),
+    "P1": (3_395_000, 3_382_500, 12_500),
+    "P2": (1_671_000, 1_671_000, 0),
 }
 
 # [Ledger 화면] Balance. expected_balance 열의 기준선일 뿐 발주·할인·계획에는 영향이 없다.
-CURRENT_BALANCE = 239_982_677
+CURRENT_BALANCE = 250_576_333
 
 # ############################################################################
 # ▼▼▼ 입력 ② 토요일마다 갱신 ▼▼▼  (제출해서 확정된 이번 주 Production 계획)
@@ -97,11 +97,13 @@ LOCKED_PRODUCTION_PLAN = {
 OBSERVED_DEMAND: Dict[str, Dict[dt.date, int]] = {
     "P1": {
         dt.date(2026, 11, 23): 177_000, 
+        dt.date(2026, 11, 24): 190_300,
     },
     "P2": {
         dt.date(2026, 11, 21): 58_239,
         dt.date(2026, 11, 22): 59_060,
         dt.date(2026, 11, 23): 61_441,    # demand_data_P2_20261121.xls 첫 행
+        dt.date(2026, 11, 24): 60_479,   
     },
 }
 # ############################################################################
