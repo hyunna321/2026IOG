@@ -174,6 +174,11 @@ POLICIES = [
     # 운영 정책 (2026-11-16~). 생산·할인·완제품 버퍼는 위와 같고 자재만 주간 정렬로 바꿨다.
     base_policy("DP+한계이익할인+누적버퍼0.75+주간정렬자재", DynamicLotSizing(), MarginalProfitOptimizer(),
                 safety_stock=CumulativeModelSigma(0.75), weekly_material=True),
+    # 운영 정책 (2026-11-27~). 위와 같고 할인만 끈다. 매뉴얼 규칙(할인율 x -> 수요 x배 증가)이면 매출이
+    # (1-x^2)배라 재고를 털 때도 손해다. 31라운드(report_draft/buffer_recheck_weekly.py nodisc):
+    # +6.24±0.68M/라운드, 31전 31승 (최소 +1.4M). 금요일 P2 3일치 재고를 토요일 할인으로 팔던 것이 주 손실.
+    base_policy("DP+할인없음+누적버퍼0.75+주간정렬자재", DynamicLotSizing(), NoDiscount(),
+                safety_stock=CumulativeModelSigma(0.75), weekly_material=True),
 ]
 
 

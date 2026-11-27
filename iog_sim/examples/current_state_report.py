@@ -123,7 +123,7 @@ AUTO_CONFIRM = False
 # 하루 수요가 직전 값보다 이 비율 넘게 변하면 OBSERVED_DEMAND 오타를 의심한다.
 DEMAND_JUMP = 0.15
 
-POLICY = next(p for p in POLICIES if p.label == "DP+한계이익할인+누적버퍼0.75+주간정렬자재")
+POLICY = next(p for p in POLICIES if p.label == "DP+할인없음+누적버퍼0.75+주간정렬자재")
 
 
 def in_transit_orders(cfg: SimConfig, today: dt.date) -> List[PurchaseOrder]:

@@ -1121,3 +1121,14 @@ def test_forecast_origin_is_today_only_when_all_todays_demand_is_observed(monkey
     assert r.forecast_origin(cal, cfg, tue) == tue - dt.timedelta(days=1)   # P1 개장일인데 없음
     monkeypatch.setattr(r, "OBSERVED_DEMAND", {"P1": {}, "P2": {sat: 74_000}})
     assert r.forecast_origin(cal, cfg, sat) == sat                         # 토요일 P1은 수요 없음
+
+
+def test_report_policy_never_discounts():
+    """2026-11-27: 할인율 x면 매출이 (1-x^2)배라 재고를 털 때도 손해. 운영 정책은 할인을 쓰지 않는다
+    (31라운드 +6.24M, 31전 31승). 자재·버퍼는 주간정렬 + 누적버퍼 0.75 그대로."""
+    from iog_sim.examples.current_state_report import POLICY
+    from iog_sim.production.safety_stock import CumulativeModelSigma
+    from iog_sim.sales.discount import NoDiscount
+    assert isinstance(POLICY.discount, NoDiscount)
+    assert isinstance(POLICY.safety_stock, CumulativeModelSigma) and POLICY.safety_stock.service_level == 0.75
+    assert POLICY.tentative_next_week
